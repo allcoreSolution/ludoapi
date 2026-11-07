@@ -44,8 +44,8 @@ const getRazorpayInstance = () => {
   }
 
   razorpayClient = new Razorpay({
-    key_id: config.razorpay.keyId,
-    key_secret: config.razorpay.keySecret,
+    key_id: String(config.razorpay.keyId).trim(),
+    key_secret: String(config.razorpay.keySecret).trim(),
   });
 
   return razorpayClient;
@@ -85,8 +85,17 @@ const createDepositOrder = async (userId, amount) => {
   try {
     rzpOrder = await rzp.orders.create(options);
   } catch (err) {
-    logger.error("razorpay_order_create_failed", { userId: String(userId), error: err.message });
-    throw new AppError(`Failed to initiate payment: ${err.message || "Gateway error"}`, 502);
+    const errorDescription =
+      err?.error?.description ||
+      err?.description ||
+      err?.message ||
+      "Gateway error (Invalid Razorpay Key or Secret)";
+    logger.error("razorpay_order_create_failed", {
+      userId: String(userId),
+      error: errorDescription,
+      rawError: err,
+    });
+    throw new AppError(`Failed to initiate payment: ${errorDescription}`, 502);
   }
 
   const paymentOrder = await PaymentOrder.create({
