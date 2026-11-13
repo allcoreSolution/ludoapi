@@ -11,6 +11,17 @@ const SEAT_OFFSETS = [0, 13, 26, 39]; // Red=0, Green=1, Yellow=2, Blue=3
 const HOME_STEP = 56; // 0 = start, 1..50 shared track, 51..55 private home column, 56 = home
 const LAST_SHARED_STEP = 50;
 
+const GAME_MODES = Object.freeze([
+  { name: "twoPlayer", label: "2 Player", maxPlayers: 2 },
+  { name: "threePlayer", label: "3 Player", maxPlayers: 3 },
+  { name: "fourPlayer", label: "4 Player", maxPlayers: 4 },
+]);
+const MODE_NAMES = Object.freeze(GAME_MODES.map((m) => m.name));
+const MAX_PLAYERS_LIST = Object.freeze(GAME_MODES.map((m) => m.maxPlayers));
+const MODE_BY_PLAYERS = Object.freeze(Object.fromEntries(GAME_MODES.map((m) => [m.maxPlayers, m.name])));
+const PLAYERS_BY_MODE = Object.freeze(Object.fromEntries(GAME_MODES.map((m) => [m.name, m.maxPlayers])));
+const MODE_LABEL = Object.freeze(Object.fromEntries(GAME_MODES.map((m) => [m.name, m.label])));
+
 // Points: dice value for every step, +56 when a token reaches home.
 const WIN_LEADERBOARD_POINTS = 100;
 const LOSS_LEADERBOARD_POINTS = -25;
@@ -173,6 +184,12 @@ module.exports = {
   SEAT_OFFSETS,
   HOME_STEP,
   LAST_SHARED_STEP,
+  GAME_MODES,
+  MODE_NAMES,
+  MAX_PLAYERS_LIST,
+  MODE_BY_PLAYERS,
+  PLAYERS_BY_MODE,
+  MODE_LABEL,
   WIN_LEADERBOARD_POINTS,
   LOSS_LEADERBOARD_POINTS,
   RuleViolation,

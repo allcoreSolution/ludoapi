@@ -1,5 +1,6 @@
 const { body, param, validationResult } = require("express-validator");
 const config = require("../../../../config/env");
+const { MAX_PLAYERS_LIST, MODE_NAMES } = require("../../games/engine/ludoEngine");
 
 // ==========================
 // Validation Error Handler
@@ -28,13 +29,13 @@ const createRoomValidation = [
   body("maxPlayers")
     .optional()
     .isInt({ min: 2, max: 4 })
-    .custom((val) => [2, 4].includes(Number(val)))
-    .withMessage("maxPlayers must be either 2 or 4"),
+    .custom((val) => MAX_PLAYERS_LIST.includes(Number(val)))
+    .withMessage("maxPlayers must be 2, 3, or 4"),
 
   body("gameMode")
     .optional()
-    .isIn(["twoPlayer", "fourPlayer"])
-    .withMessage("gameMode must be either 'twoPlayer' or 'fourPlayer'"),
+    .isIn(MODE_NAMES)
+    .withMessage("gameMode must be 'twoPlayer', 'threePlayer', or 'fourPlayer'"),
 
   body("entryFee")
     .optional()

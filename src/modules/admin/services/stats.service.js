@@ -16,13 +16,13 @@ const User = require("../../auth/models/User");
 const GameSession = require("../../games/models/GameSession");
 const SupportTicket = require("../../support/models/SupportTicket");
 const AdminAuditLog = require("../models/adminAuditLog.model");
+const { MODE_NAMES, PLAYERS_BY_MODE, MODE_LABEL } = require("../../games/engine/ludoEngine");
 const { lastDays, timeAgo } = require("../../../../utils/adminHelpers");
 
 const DAY = 86_400_000;
 const tz = () => config.admin.timezone;
 const dayExpr = (field) => ({ $dateToString: { format: "%Y-%m-%d", date: field, timezone: tz() } });
-const MAX_PLAYERS = { twoPlayer: 2, fourPlayer: 4 };
-const MODE_LABEL = { twoPlayer: "2 Player", fourPlayer: "4 Player" };
+const MAX_PLAYERS = PLAYERS_BY_MODE;
 
 const growth = (current, previous) => {
   if (previous === 0) return current > 0 ? 100 : 0;
@@ -146,7 +146,7 @@ const buildDashboard = async () => {
   // modes
   const counts = Object.fromEntries(modeAgg.filter((m) => m._id).map((m) => [m._id, m.count]));
   const modeTotal = Object.values(counts).reduce((a, b) => a + b, 0);
-  const modes = ["twoPlayer", "fourPlayer"].map((name) => ({
+  const modes = MODE_NAMES.map((name) => ({
     name,
     label: MODE_LABEL[name],
     count: counts[name] || 0,

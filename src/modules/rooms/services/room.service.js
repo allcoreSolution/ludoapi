@@ -8,6 +8,7 @@ const { generateRoomCode } = require("../../../../utils/secureRandom");
 
 const GameRoom = require("../models/GameRoom");
 const walletService = require("../../wallet/services/wallet.service");
+const { MODE_BY_PLAYERS, PLAYERS_BY_MODE } = require("../../games/engine/ludoEngine");
 
 const COLOR_PALETTE = [
   { seatIndex: 0, color: "Red" },
@@ -83,13 +84,40 @@ const cancelRoomAndRefund = async (room, label = "room cancelled") => {
   return cancelled;
 };
 
+/** Resolve room (maxPlayers, gameMode) consistently from either or both body fields. */
+const resolveRoomMode = (body = {}) => {
+  const hasMax = body.maxPlayers !== undefined && body.maxPlayers !== null && body.maxPlayers !== "";
+  const hasMode = typeof body.gameMode === "string" && body.gameMode.trim() !== "";
+
+  if (hasMax && hasMode) {
+    const count = Number(body.maxPlayers);
+    const mode = body.gameMode.trim();
+    if (MODE_BY_PLAYERS[count] !== mode) {
+      throw new AppError(`maxPlayers (${count}) does not match gameMode ('${mode}')`, 400);
+    }
+    return { maxPlayers: count, gameMode: mode };
+  }
+  if (hasMax) {
+    const count = Number(body.maxPlayers);
+    const mode = MODE_BY_PLAYERS[count];
+    if (!mode) throw new AppError("maxPlayers must be 2, 3, or 4", 400);
+    return { maxPlayers: count, gameMode: mode };
+  }
+  if (hasMode) {
+    const mode = body.gameMode.trim();
+    const count = PLAYERS_BY_MODE[mode];
+    if (!count) throw new AppError("gameMode must be 'twoPlayer', 'threePlayer', or 'fourPlayer'", 400);
+    return { maxPlayers: count, gameMode: mode };
+  }
+  return { maxPlayers: 2, gameMode: "twoPlayer" };
+};
+
 // ------------------------------------------------------------------
 // 1. Create
 // ------------------------------------------------------------------
 const createRoom = async (user, body) => {
   const userId = user._id;
-  const maxPlayers = body.maxPlayers ? Number(body.maxPlayers) : 2;
-  const gameMode = maxPlayers === 4 ? "fourPlayer" : "twoPlayer";
+  const { maxPlayers, gameMode } = resolveRoomMode(body);
   const entryFee = body.entryFee ? Number(body.entryFee) : 0;
 
   const activeRoom = await GameRoom.findOne({ "players.user": userId, status: { $in: ACTIVE_STATUSES } });
@@ -311,4 +339,4 @@ const cancelStaleRooms = async () => {
   return cancelled;
 };
 
-module.exports = { createRoom, joinRoom, getRoomDetails, leaveRoom, cancelStaleRooms, cancelRoomAndRefund };
+module.exports = { createRoom, joinRoom, getRoomDetails, leaveRoom, cancelStaleRooms, cancelRoomAndRefund, resolveRoomMode };

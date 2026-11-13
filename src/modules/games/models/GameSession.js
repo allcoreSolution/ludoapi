@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { MODE_NAMES } = require("../engine/ludoEngine");
 
 const tokenSchema = new mongoose.Schema(
   {
@@ -140,7 +141,7 @@ const gameSessionSchema = new mongoose.Schema(
     },
     gameMode: {
       type: String,
-      enum: ["twoPlayer", "fourPlayer"],
+      enum: MODE_NAMES,
       default: "twoPlayer",
     },
     entryFee: {

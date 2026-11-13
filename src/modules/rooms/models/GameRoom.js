@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { MAX_PLAYERS_LIST, MODE_NAMES } = require("../../games/engine/ludoEngine");
 
 const playerSlotSchema = new mongoose.Schema(
   {
@@ -67,7 +68,7 @@ const gameRoomSchema = new mongoose.Schema(
     maxPlayers: {
       type: Number,
       required: true,
-      enum: [2, 4],
+      enum: MAX_PLAYERS_LIST,
       default: 2,
     },
 
@@ -75,7 +76,7 @@ const gameRoomSchema = new mongoose.Schema(
     gameMode: {
       type: String,
       required: true,
-      enum: ["twoPlayer", "fourPlayer"],
+      enum: MODE_NAMES,
       default: "twoPlayer",
     },
 

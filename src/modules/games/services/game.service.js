@@ -242,7 +242,7 @@ const startGame = async (userId, roomCode) => {
     const session = await GameSession.create({
       room: locked._id,
       roomCode: locked.roomCode,
-      gameMode: locked.maxPlayers === 4 ? "fourPlayer" : "twoPlayer",
+      gameMode: locked.gameMode || engine.MODE_BY_PLAYERS[locked.maxPlayers] || "twoPlayer",
       entryFee: locked.entryFee,
       prizePool,
       status: "in_progress",

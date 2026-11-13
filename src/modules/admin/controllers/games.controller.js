@@ -4,9 +4,10 @@ const AppError = require("../../../../utils/AppError");
 const asyncHandler = require("../../../../utils/asyncHandler");
 const { qs, parsePagination, pageMeta, escapeRegex, dateRange } = require("../../../../utils/adminHelpers");
 const GameSession = require("../../games/models/GameSession");
+const { MODE_NAMES } = require("../../games/engine/ludoEngine");
 const { gameSummary, gameDetail } = require("../../../../utils/adminShapes");
 
-const MODES = ["twoPlayer", "fourPlayer"];
+const MODES = MODE_NAMES;
 const STATUSES = ["in_progress", "completed", "abandoned"];
 
 // GET /api/admin/games?page&limit&status&mode&roomCode&userId&from&to

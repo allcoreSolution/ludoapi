@@ -64,8 +64,12 @@ test("dashboard payload has the shape the admin panel expects", async () => {
   assert.equal(data.growth.total[5], 96); // 4 users joined today
   assert.equal(data.growth.active[6], 7);
 
-  assert.deepEqual(data.modes.map((m) => [m.name, m.percent, m.count]), [["twoPlayer", 75, 3], ["fourPlayer", 25, 1]]);
-  assert.equal(data.modes[0].label, "2 Player");
+  assert.deepEqual(data.modes.map((m) => [m.name, m.percent, m.count]), [
+    ["twoPlayer", 75, 3],
+    ["threePlayer", 0, 0],
+    ["fourPlayer", 25, 1],
+  ]);
+  assert.deepEqual(data.modes.map((m) => m.label), ["2 Player", "3 Player", "4 Player"]);
 
   assert.equal(data.topGames[0].playersLabel, "2/2");
   assert.equal(data.topGames[0].status, "completed");
