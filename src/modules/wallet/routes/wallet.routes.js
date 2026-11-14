@@ -15,6 +15,7 @@ const {
   requestWithdrawal,
   getMyDeposits,
   getMyWithdrawals,
+  submitUpiDeposit,
 } = require("../controllers/wallet.controller");
 const {
   getTransactionsValidation,
@@ -82,6 +83,16 @@ router.get(
   getTransactionsValidation,
   validateRequest,
   getMyDeposits
+);
+
+// ==========================
+// 6B. Deposit: Direct UPI QR Request (Scan & Pay)
+// POST /api/wallet/deposit/upi-request
+// ==========================
+router.post(
+  "/deposit/upi-request",
+  protect,
+  submitUpiDeposit
 );
 
 // ==========================

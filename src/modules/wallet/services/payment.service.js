@@ -670,6 +670,130 @@ const listAdminDeposits = async ({ status, page = 1, limit = 20, search }) => {
   };
 };
 
+// ==========================================
+// 8. DIRECT UPI QR DEPOSIT (SCAN & PAY)
+// ==========================================
+const submitUpiDeposit = async (userId, { amount, utr }) => {
+  const numericAmount = Number(amount);
+  if (!Number.isSafeInteger(numericAmount) || numericAmount <= 0) {
+    throw new AppError("Deposit amount must be a positive whole number", 400);
+  }
+  if (numericAmount < config.payment.minDeposit) {
+    throw new AppError(`Minimum deposit amount is ₹${config.payment.minDeposit}`, 400);
+  }
+  if (numericAmount > config.payment.maxDeposit) {
+    throw new AppError(`Maximum deposit amount is ₹${config.payment.maxDeposit}`, 400);
+  }
+
+  const cleanUtr = String(utr || "").trim();
+  if (!cleanUtr || cleanUtr.length < 8 || cleanUtr.length > 30) {
+    throw new AppError("Please enter a valid 12-digit UPI UTR / Reference number", 400);
+  }
+
+  // Prevent duplicate UTR submission
+  const existing = await PaymentOrder.findOne({
+    $or: [
+      { razorpayPaymentId: cleanUtr },
+      { "metadata.utr": cleanUtr },
+    ],
+  });
+  if (existing) {
+    throw new AppError("This UTR / Reference number has already been submitted.", 400);
+  }
+
+  const internalOrderId = `ORD_UPI_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+
+  const paymentOrder = await PaymentOrder.create({
+    user: userId,
+    orderId: internalOrderId,
+    razorpayOrderId: `upi_${Date.now()}_${cleanUtr}`,
+    razorpayPaymentId: cleanUtr,
+    amount: numericAmount,
+    currency: "INR",
+    status: "pending",
+    paymentMethod: "upi_qr",
+    metadata: {
+      utr: cleanUtr,
+      payeeUpi: "6206315868@ybl",
+      payeeName: "VISHAL CHAUHAN",
+      submittedAt: new Date(),
+    },
+  });
+
+  return {
+    orderId: internalOrderId,
+    utr: cleanUtr,
+    amount: numericAmount,
+    status: "pending",
+    message: "Deposit request submitted successfully. Pending admin approval.",
+    paymentOrder,
+  };
+};
+
+const approveDeposit = async (orderId, adminId, { adminNote } = {}) => {
+  const order = await PaymentOrder.findById(orderId);
+  if (!order) {
+    throw new AppError("Deposit order not found", 404);
+  }
+  if (order.status === "success") {
+    const balance = await walletService.getBalance(order.user);
+    return { success: true, message: "Deposit is already approved", balance, order };
+  }
+  if (order.status !== "pending") {
+    throw new AppError(`Cannot approve deposit with status '${order.status}'`, 400);
+  }
+
+  order.status = "success";
+  order.metadata = {
+    ...(order.metadata || {}),
+    approvedBy: String(adminId),
+    approvedAt: new Date(),
+    adminNote: adminNote || "Approved by Admin",
+  };
+  await order.save();
+
+  const depositRefId = `deposit:upi:${order._id}`;
+  const creditResult = await walletService.creditWallet(
+    order.user,
+    order.amount,
+    "deposit",
+    `Direct UPI Deposit (UTR: ${order.razorpayPaymentId || order.orderId})`,
+    depositRefId
+  );
+
+  return {
+    success: true,
+    message: `Deposit of ₹${order.amount} approved and credited to user`,
+    balance: creditResult.wallet.balance,
+    order,
+  };
+};
+
+const rejectDeposit = async (orderId, adminId, { rejectionReason, adminNote } = {}) => {
+  const order = await PaymentOrder.findById(orderId);
+  if (!order) {
+    throw new AppError("Deposit order not found", 404);
+  }
+  if (order.status !== "pending") {
+    throw new AppError(`Cannot reject deposit with status '${order.status}'`, 400);
+  }
+
+  order.status = "failed";
+  order.errorDetails = {
+    reason: rejectionReason || "Rejected by Admin",
+    rejectedBy: String(adminId),
+    rejectedAt: new Date(),
+    adminNote,
+  };
+  await order.save();
+
+  return {
+    success: true,
+    message: "Deposit request rejected",
+    order,
+  };
+};
+
 module.exports = {
   createDepositOrder,
   verifyDepositPayment,
@@ -681,4 +805,7 @@ module.exports = {
   approveWithdrawal,
   rejectWithdrawal,
   listAdminDeposits,
+  submitUpiDeposit,
+  approveDeposit,
+  rejectDeposit,
 };

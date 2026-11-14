@@ -51,6 +51,8 @@ router.get("/reports/daily", economyCtl.dailyReport);
 
 // Payments & Withdrawals
 router.get("/deposits", v.listQuery, check, paymentsCtl.listDeposits);
+router.patch("/deposits/:id/approve", adminWriteLimiter, v.idParam, check, paymentsCtl.approveDeposit);
+router.patch("/deposits/:id/reject", adminWriteLimiter, v.idParam, check, paymentsCtl.rejectDeposit);
 router.get("/withdrawals", v.listQuery, check, paymentsCtl.listWithdrawals);
 router.patch("/withdrawals/:id/approve", adminWriteLimiter, v.withdrawalApproveValidation, check, paymentsCtl.approveWithdrawal);
 router.patch("/withdrawals/:id/reject", adminWriteLimiter, v.withdrawalRejectValidation, check, paymentsCtl.rejectWithdrawal);

@@ -20,6 +20,41 @@ exports.listDeposits = asyncHandler(async (req, res) => {
   });
 });
 
+// PATCH /api/admin/deposits/:id/approve
+exports.approveDeposit = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const adminId = req.admin._id;
+  const { adminNote } = req.body;
+
+  const result = await paymentService.approveDeposit(id, adminId, {
+    adminNote,
+  });
+
+  res.json({
+    success: true,
+    message: "Deposit approved and coins credited to user wallet successfully",
+    data: result,
+  });
+});
+
+// PATCH /api/admin/deposits/:id/reject
+exports.rejectDeposit = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const adminId = req.admin._id;
+  const { rejectionReason, adminNote } = req.body;
+
+  const result = await paymentService.rejectDeposit(id, adminId, {
+    rejectionReason,
+    adminNote,
+  });
+
+  res.json({
+    success: true,
+    message: "Deposit rejected",
+    data: result,
+  });
+});
+
 // GET /api/admin/withdrawals?page&limit&status&search
 exports.listWithdrawals = asyncHandler(async (req, res) => {
   const { page, limit, status, search } = req.query;

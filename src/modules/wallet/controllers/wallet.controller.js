@@ -256,3 +256,28 @@ exports.getMyWithdrawals = async (req, res) => {
     });
   }
 };
+
+// ==========================================
+// 10. DIRECT UPI DEPOSIT REQUEST (SCAN & PAY)
+// POST /api/wallet/deposit/upi-request
+// ==========================================
+exports.submitUpiDeposit = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { amount, utr } = req.body;
+
+    const result = await paymentService.submitUpiDeposit(userId, { amount, utr });
+
+    return res.status(201).json({
+      success: true,
+      message: result.message,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Submit UPI Deposit Error:", error);
+    return res.status(error.statusCode || error.status || 500).json({
+      success: false,
+      message: error.statusCode || error.status ? error.message : "Internal Server Error",
+    });
+  }
+};
