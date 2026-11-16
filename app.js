@@ -29,6 +29,14 @@ app.disable("x-powered-by");
 // Needed so req.ip (rate limiting, logs) is the real client IP behind nginx / a PaaS proxy.
 app.set("trust proxy", config.trustProxy);
 
+// Normalize multiple slashes in URL (e.g. //api//wallet -> /api/wallet)
+app.use((req, _res, next) => {
+  if (req.url && req.url.includes("//")) {
+    req.url = req.url.replace(/\/{2,}/g, "/");
+  }
+  next();
+});
+
 app.use(requestLogger);
 
 // ==========================

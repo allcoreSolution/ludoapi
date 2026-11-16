@@ -89,11 +89,9 @@ router.get(
 // 6B. Deposit: Direct UPI QR Request (Scan & Pay)
 // POST /api/wallet/deposit/upi-request
 // ==========================
-router.post(
-  "/deposit/upi-request",
-  protect,
-  submitUpiDeposit
-);
+router.post("/deposit/upi-request", protect, submitUpiDeposit);
+router.post("/deposit/upi", protect, submitUpiDeposit);
+router.post("/deposit/upi-submit", protect, submitUpiDeposit);
 
 // ==========================
 // 7. Razorpay Webhook (Server-to-Server)
