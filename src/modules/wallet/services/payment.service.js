@@ -710,22 +710,35 @@ const submitUpiDeposit = async (userId, { amount, utr }) => {
     razorpayPaymentId: cleanUtr,
     amount: numericAmount,
     currency: "INR",
-    status: "pending",
+    status: "success",
     paymentMethod: "upi_qr",
     metadata: {
       utr: cleanUtr,
       payeeUpi: "6206315868@ybl",
       payeeName: "VISHAL CHAUHAN",
       submittedAt: new Date(),
+      autoCredited: true,
+      approvedAt: new Date(),
     },
   });
+
+  // Option A: Auto-credit user wallet immediately on UTR submission
+  const depositRefId = `deposit:upi:${paymentOrder._id}`;
+  const creditResult = await walletService.creditWallet(
+    userId,
+    numericAmount,
+    "deposit",
+    `Direct UPI Deposit (UTR: ${cleanUtr})`,
+    depositRefId
+  );
 
   return {
     orderId: internalOrderId,
     utr: cleanUtr,
     amount: numericAmount,
-    status: "pending",
-    message: "Deposit request submitted successfully. Pending admin approval.",
+    status: "success",
+    balance: creditResult.wallet ? creditResult.wallet.balance : undefined,
+    message: `Payment verified! ₹${numericAmount} coins have been added to your wallet.`,
     paymentOrder,
   };
 };
