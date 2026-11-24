@@ -178,30 +178,48 @@ const init = (httpServer) => {
     });
 
     // 3. Join Match Session (Session channel synchronization)
-    socket.on("join_session", async (data, ack) => {
+    const handleJoinSession = async (data, ack) => {
       try {
-        const sessionId = data?.sessionId;
-        if (!sessionId) {
-          if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId is required" });
+        const sid = data?.sessionId || data?.gameId || data?.roomCode;
+        if (!sid) {
+          if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId or gameId is required" });
           return;
         }
-        socket.join(`session:${sessionId}`);
-        const session = await GameSession.findById(sessionId);
+
+        const session = await gameService.findSessionByGameId(sid);
         if (!session) {
           if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
           return;
         }
+
+        socket.join(`session:${session._id}`);
+        socket.join(`game:${session._id}`);
+        if (data?.gameId) socket.join(`game:${data.gameId}`);
+        if (session.roomCode) socket.join(`room:${session.roomCode}`);
+
         const st = formatSessionState(session);
-        io.to(`session:${sessionId}`).emit("player_reconnected", {
-          sessionId: String(sessionId),
+        const joinPayload = {
+          gameId: String(session._id),
+          sessionId: String(session._id),
           userId,
-        });
-        if (typeof ack === "function") ack({ ok: true, data: { state: st } });
+          playerId: userId,
+          name: socket.user.name,
+          state: st,
+          gameState: st,
+        };
+
+        io.to(`session:${session._id}`).emit("player_reconnected", joinPayload);
+        socket.emit("game_state", { state: st, gameState: st });
+
+        if (typeof ack === "function") ack({ ok: true, data: { state: st, gameState: st } });
       } catch (err) {
         logger.error("socket_join_session_error", { err: err.message, userId });
         if (typeof ack === "function") ack({ ok: false, code: "INTERNAL_ERROR", message: err.message });
       }
-    });
+    };
+
+    socket.on("join_session", handleJoinSession);
+    socket.on("join_game", handleJoinSession);
 
     // 4. Start Match
     socket.on("start_match", async (data, ack) => {
@@ -211,14 +229,19 @@ const init = (httpServer) => {
         const st = formatSessionState(session);
         const payload = {
           roomCode,
+          gameId: String(session._id),
           sessionId: String(session._id),
           session: st,
           state: st,
+          gameState: st,
         };
         io.to(`room:${roomCode}`).emit("match_started", payload);
+        io.to(`session:${session._id}`).emit("match_started", payload);
+        io.to(`game:${session._id}`).emit("match_started", payload);
         if (typeof ack === "function") ack({ ok: true, data: payload });
       } catch (err) {
         logger.error("socket_start_match_error", { err: err.message, userId });
+        socket.emit("game_error", { code: "START_FAILED", message: err.message });
         if (typeof ack === "function") {
           ack({
             ok: false,
@@ -232,32 +255,71 @@ const init = (httpServer) => {
     // 5. Server Authoritative Dice Roll
     const handleRollDice = async (data, ack) => {
       try {
-        const sessionId = data?.sessionId;
-        if (!sessionId) {
-          if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId is required" });
+        const sid = data?.sessionId || data?.gameId;
+        if (!sid) {
+          if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId or gameId is required" });
           return;
         }
-        const { message, data: rollData } = await gameService.rollDice(socket.user._id, sessionId);
-        const updatedSession = await GameSession.findById(sessionId);
+
+        const session = await gameService.findSessionByGameId(sid);
+        if (!session) {
+          if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
+          return;
+        }
+
+        const { message, data: rollData } = await gameService.rollDice(socket.user._id, session._id);
+        const updatedSession = await GameSession.findById(session._id);
         const st = formatSessionState(updatedSession);
         const payload = {
-          sessionId: String(sessionId),
+          gameId: String(session._id),
+          sessionId: String(session._id),
           playerId: String(socket.user._id),
           diceValue: rollData.diceValue,
+          diceResult: rollData.diceValue,
+          turnId: String(updatedSession.__v || 0),
+          phase: rollData.turnPassed ? "waitingForRoll" : "waitingForMove",
           movableTokenIds: rollData.movableTokenIds || [],
           turnPassed: Boolean(rollData.turnPassed),
           threeSixes: Boolean(rollData.consecutiveSixes >= 3),
           turn: st.turn,
           state: st,
+          gameState: st,
         };
 
         // Broadcast to BOTH players in real time
-        io.to(`session:${sessionId}`).emit("dice_roll_result", payload);
-        io.to(`session:${sessionId}`).emit("dice_rolled", payload);
+        io.to(`session:${session._id}`).emit("dice_roll_result", payload);
+        io.to(`session:${session._id}`).emit("dice_rolled", payload);
+        io.to(`game:${session._id}`).emit("dice_roll_result", payload);
+        if (data?.gameId && String(data.gameId) !== String(session._id)) {
+          io.to(`game:${data.gameId}`).emit("dice_roll_result", payload);
+        }
 
-        if (typeof ack === "function") ack({ ok: true, data: { ...rollData, state: st } });
+        // If turn was passed (no movable tokens or three 6s), emit turn_changed
+        if (rollData.turnPassed) {
+          const turnPayload = {
+            gameId: String(session._id),
+            sessionId: String(session._id),
+            currentPlayerId: String(updatedSession.currentTurnPlayer),
+            currentTurnSeat: updatedSession.currentTurnSeat,
+            phase: "waitingForRoll",
+            turn: st.turn,
+            state: st,
+            gameState: st,
+          };
+          io.to(`session:${session._id}`).emit("turn_changed", turnPayload);
+          io.to(`game:${session._id}`).emit("turn_changed", turnPayload);
+        }
+
+        // Also emit updated game_state
+        io.to(`session:${session._id}`).emit("game_state", { state: st, gameState: st });
+
+        if (typeof ack === "function") ack({ ok: true, data: { ...rollData, state: st, gameState: st } });
       } catch (err) {
         logger.warn("socket_roll_dice_error", { err: err.message, userId });
+        socket.emit("game_error", {
+          code: err.statusCode === 403 ? "OUT_OF_TURN" : "DICE_ROLL_FAILED",
+          message: err.message,
+        });
         if (typeof ack === "function") {
           ack({
             ok: false,
@@ -274,41 +336,80 @@ const init = (httpServer) => {
     // 6. Real-Time Token Movement
     const handleMoveToken = async (data, ack) => {
       try {
-        const sessionId = data?.sessionId;
+        const sid = data?.sessionId || data?.gameId;
         const tokenId = data?.tokenId;
-        if (!sessionId || tokenId === undefined) {
+        if (!sid || tokenId === undefined) {
           if (typeof ack === "function") {
-            ack({ ok: false, code: "BAD_REQUEST", message: "sessionId and tokenId are required" });
+            ack({ ok: false, code: "BAD_REQUEST", message: "sessionId/gameId and tokenId are required" });
           }
           return;
         }
-        const { message, data: moveData } = await gameService.moveToken(socket.user._id, sessionId, tokenId);
-        const updatedSession = await GameSession.findById(sessionId);
+
+        const session = await gameService.findSessionByGameId(sid);
+        if (!session) {
+          if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
+          return;
+        }
+
+        const { message, data: moveData } = await gameService.moveToken(socket.user._id, session._id, tokenId);
+        const updatedSession = await GameSession.findById(session._id);
         const st = formatSessionState(updatedSession);
         const payload = {
-          sessionId: String(sessionId),
+          gameId: String(session._id),
+          sessionId: String(session._id),
           playerId: String(socket.user._id),
+          tokenId: Number(tokenId),
           move: moveData.move || { tokenId: Number(tokenId) },
           turn: st.turn,
           state: st,
+          gameState: st,
         };
 
         // Broadcast token move to BOTH devices
-        io.to(`session:${sessionId}`).emit("token_moved", payload);
+        io.to(`session:${session._id}`).emit("token_moved", payload);
+        io.to(`game:${session._id}`).emit("token_moved", payload);
+        if (data?.gameId && String(data.gameId) !== String(session._id)) {
+          io.to(`game:${data.gameId}`).emit("token_moved", payload);
+        }
+
+        // Broadcast turn changed
+        const turnPayload = {
+          gameId: String(session._id),
+          sessionId: String(session._id),
+          currentPlayerId: String(updatedSession.currentTurnPlayer),
+          currentTurnSeat: updatedSession.currentTurnSeat,
+          getsExtraTurn: Boolean(moveData.move?.getsExtraTurn),
+          phase: "waitingForRoll",
+          turn: st.turn,
+          state: st,
+          gameState: st,
+        };
+        io.to(`session:${session._id}`).emit("turn_changed", turnPayload);
+        io.to(`game:${session._id}`).emit("turn_changed", turnPayload);
+
+        // Also emit updated game_state
+        io.to(`session:${session._id}`).emit("game_state", { state: st, gameState: st });
 
         if (moveData.gameCompleted) {
           const finishedPayload = {
-            sessionId: String(sessionId),
+            gameId: String(session._id),
+            sessionId: String(session._id),
             winnerId: moveData.winner ? String(moveData.winner) : (updatedSession.winner ? String(updatedSession.winner) : null),
             ranking: updatedSession.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
             state: st,
+            gameState: st,
           };
-          io.to(`session:${sessionId}`).emit("match_finished", finishedPayload);
+          io.to(`session:${session._id}`).emit("match_finished", finishedPayload);
+          io.to(`game:${session._id}`).emit("match_finished", finishedPayload);
         }
 
-        if (typeof ack === "function") ack({ ok: true, data: { ...moveData, state: st } });
+        if (typeof ack === "function") ack({ ok: true, data: { ...moveData, state: st, gameState: st } });
       } catch (err) {
         logger.warn("socket_move_token_error", { err: err.message, userId });
+        socket.emit("game_error", {
+          code: "INVALID_MOVE",
+          message: err.message,
+        });
         if (typeof ack === "function") {
           ack({
             ok: false,
@@ -321,6 +422,46 @@ const init = (httpServer) => {
 
     socket.on("token_move_requested", handleMoveToken);
     socket.on("move_token", handleMoveToken);
+
+    // 6b. Request Game State
+    socket.on("request_game_state", async (data, ack) => {
+      try {
+        const sid = data?.sessionId || data?.gameId;
+        const session = await gameService.findSessionByGameId(sid);
+        if (!session) {
+          if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
+          return;
+        }
+        const st = formatSessionState(session);
+        socket.emit("game_state", { state: st, gameState: st });
+        if (typeof ack === "function") ack({ ok: true, data: { state: st, gameState: st } });
+      } catch (err) {
+        if (typeof ack === "function") ack({ ok: false, message: err.message });
+      }
+    });
+
+    // 6c. Player Reconnected
+    socket.on("player_reconnected", async (data, ack) => {
+      try {
+        const sid = data?.sessionId || data?.gameId;
+        const session = await gameService.findSessionByGameId(sid);
+        if (session) {
+          const st = formatSessionState(session);
+          io.to(`session:${session._id}`).emit("player_reconnected", {
+            gameId: String(session._id),
+            sessionId: String(session._id),
+            userId,
+            playerId: userId,
+            state: st,
+            gameState: st,
+          });
+          socket.emit("game_state", { state: st, gameState: st });
+        }
+        if (typeof ack === "function") ack({ ok: true });
+      } catch (err) {
+        if (typeof ack === "function") ack({ ok: false, message: err.message });
+      }
+    });
 
     // 7. Turn Timeout Handling
     socket.on("turn_timeout", async (data, ack) => {
@@ -437,6 +578,20 @@ const emitToRoom = (roomCode, event, payload) => {
   return true;
 };
 
+/**
+ * Emit an event across session, game and room channels.
+ */
+const emitToGame = (sessionOrId, event, payload) => {
+  if (!io || !sessionOrId) return false;
+  const sid = typeof sessionOrId === "object" ? String(sessionOrId._id || sessionOrId.sessionId || sessionOrId.gameId) : String(sessionOrId);
+  io.to(`session:${sid}`).emit(event, payload);
+  io.to(`game:${sid}`).emit(event, payload);
+  if (typeof sessionOrId === "object" && sessionOrId.roomCode) {
+    io.to(`room:${String(sessionOrId.roomCode).toUpperCase()}`).emit(event, payload);
+  }
+  return true;
+};
+
 const close = async () => {
   if (io) {
     await new Promise((resolve) => io.close(resolve));
@@ -450,6 +605,7 @@ module.exports = {
   emitToUser,
   emitToSession,
   emitToRoom,
+  emitToGame,
   formatSessionState,
   close,
 };

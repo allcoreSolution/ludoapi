@@ -68,10 +68,48 @@ const historyQueryValidation = [
     .withMessage("limit must be an integer between 1 and 50"),
 ];
 
+const config = require("../../../../config/env");
+const { MODE_NAMES } = require("../engine/ludoEngine");
+
+// Create Match Validation (POST /api/games/create)
+const createMatchValidation = [
+  body("entryFee")
+    .optional()
+    .isInt({ min: 0, max: config.economy.maxEntryFee })
+    .withMessage(`entryFee must be a whole number between 0 and ${config.economy.maxEntryFee}`),
+  body("gameMode")
+    .optional()
+    .isIn(MODE_NAMES)
+    .withMessage("gameMode must be 'twoPlayer', 'threePlayer', or 'fourPlayer'"),
+];
+
+// Join Match Validation (POST /api/games/join)
+const joinMatchValidation = [
+  body("roomCode")
+    .trim()
+    .notEmpty()
+    .withMessage("Room code is required")
+    .isLength({ min: 6, max: 6 })
+    .withMessage("Room code must be exactly 6 characters")
+    .isAlphanumeric()
+    .withMessage("Room code must contain only letters and numbers"),
+];
+
+// Game ID / Session ID Param Validation
+const gameIdParamValidation = [
+  param("gameId")
+    .trim()
+    .notEmpty()
+    .withMessage("gameId is required"),
+];
+
 module.exports = {
   validateRequest,
   startGameValidation,
   sessionIdParamValidation,
   moveTokenValidation,
   historyQueryValidation,
+  createMatchValidation,
+  joinMatchValidation,
+  gameIdParamValidation,
 };

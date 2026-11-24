@@ -1,5 +1,6 @@
 "use strict";
 
+const mongoose = require("mongoose");
 const config = require("../../../../config/env");
 const AppError = require("../../../../utils/AppError");
 const logger = require("../../../../utils/logger");
@@ -595,6 +596,187 @@ const getHistory = async (userId, pageRaw, limitRaw) => {
   return { totalMatches, currentPage: page, totalPages: Math.ceil(totalMatches / limit), matches: formatted };
 };
 
+// ------------------------------------------------------------------
+// Online Match Authoritative Handlers (Phase 2 & 7)
+// ------------------------------------------------------------------
+const findSessionByGameId = async (gameId) => {
+  if (!gameId) return null;
+  const str = String(gameId).trim();
+  if (mongoose.Types.ObjectId.isValid(str)) {
+    const byId = await GameSession.findById(str);
+    if (byId) return byId;
+    const byRoom = await GameSession.findOne({ room: str });
+    if (byRoom) return byRoom;
+  }
+  return GameSession.findOne({ roomCode: str.toUpperCase() });
+};
+
+const createMatch = async (user, body = {}) => {
+  const roomService = require("../../rooms/services/room.service");
+  const { room, userCoins } = await roomService.createRoom(user, {
+    maxPlayers: 2,
+    gameMode: body.gameMode || "twoPlayer",
+    entryFee: body.entryFee !== undefined ? Number(body.entryFee) : 0,
+  });
+
+  return {
+    gameId: room._id,
+    roomId: room._id,
+    roomCode: room.roomCode,
+    gameMode: room.gameMode,
+    entryFee: room.entryFee,
+    prizePool: room.prizePool,
+    status: room.status,
+    players: room.players,
+    host: room.host,
+    userCoins,
+  };
+};
+
+const joinMatch = async (user, roomCodeRaw) => {
+  const roomService = require("../../rooms/services/room.service");
+  const { room, alreadyInRoom } = await roomService.joinRoom(user, roomCodeRaw);
+
+  let session = null;
+  // If room is full (2 players), automatically start the game session
+  if (room.players.length >= 2) {
+    try {
+      const started = await startGame(user._id, room.roomCode);
+      session = started.session;
+    } catch (_err) {
+      session = await GameSession.findOne({ room: room._id, status: "in_progress" });
+    }
+  }
+
+  return {
+    gameId: session ? session._id : room._id,
+    sessionId: session ? session._id : null,
+    roomId: room._id,
+    roomCode: room.roomCode,
+    gameMode: room.gameMode,
+    entryFee: room.entryFee,
+    prizePool: room.prizePool,
+    status: session ? session.status : room.status,
+    players: session ? session.players : room.players,
+    currentTurnPlayer: session ? session.currentTurnPlayer : null,
+    currentTurnSeat: session ? session.currentTurnSeat : 0,
+    session,
+    alreadyInRoom,
+  };
+};
+
+const getAuthoritativeGameState = async (userId, gameId) => {
+  let session = await findSessionByGameId(gameId);
+  if (!session) {
+    const str = String(gameId).trim();
+    let room = null;
+    if (mongoose.Types.ObjectId.isValid(str)) {
+      room = await GameRoom.findById(str);
+    }
+    if (!room) {
+      room = await GameRoom.findOne({ roomCode: str.toUpperCase() });
+    }
+    if (!room) throw new AppError("Game or room not found", 404);
+
+    if (!room.players.some((p) => String(p.user) === String(userId))) {
+      throw new AppError("You are not a participant in this game", 403);
+    }
+
+    return {
+      gameId: room._id,
+      roomId: room._id,
+      roomCode: room.roomCode,
+      playerIds: room.players.map((p) => String(p.user)),
+      players: room.players.map((p) => ({
+        userId: String(p.user),
+        name: p.name,
+        avatar: p.avatar || "",
+        seatIndex: p.seatIndex,
+        color: p.color,
+        score: 0,
+        tokens: [0, 1, 2, 3].map((id) => ({ tokenId: id, step: 0, isHome: false })),
+      })),
+      currentPlayerId: String(room.host),
+      currentTurnPlayer: String(room.host),
+      currentTurnSeat: 0,
+      diceValue: null,
+      diceResult: null,
+      diceStatus: "waiting",
+      tokens: {},
+      gamePhase: "waitingForPlayers",
+      gameStatus: room.status,
+      status: room.status,
+      remainingTimeSeconds: 600,
+      updatedAt: room.updatedAt,
+    };
+  }
+
+  assertParticipant(session, userId);
+
+  if (await settleIfTimeUp(session)) {
+    session = await findSessionByGameId(gameId);
+  }
+
+  const populated = await GameSession.findById(session._id)
+    .populate("players.user", "name avatar username")
+    .populate("winner", "name avatar");
+
+  const socketManager = require("../../../sockets/socketManager");
+  const formatted = socketManager.formatSessionState(populated);
+
+  const tokensMap = {};
+  for (const p of populated.players) {
+    tokensMap[String(p.user._id || p.user)] = (p.tokens || []).map((t) => ({
+      tokenId: t.tokenId,
+      step: t.step,
+      isHome: Boolean(t.isHome),
+    }));
+  }
+
+  const gamePhase =
+    populated.status === "completed"
+      ? "gameCompleted"
+      : populated.turnStatus === "WAITING_FOR_ROLL"
+      ? "waitingForRoll"
+      : "waitingForMove";
+
+  return {
+    gameId: populated._id,
+    sessionId: populated._id,
+    roomId: populated.room,
+    roomCode: populated.roomCode,
+    playerIds: populated.players.map((p) => String(p.user._id || p.user)),
+    players: formatted.players,
+    currentPlayerId: String(populated.currentTurnPlayer),
+    currentTurnPlayer: String(populated.currentTurnPlayer),
+    currentTurnSeat: populated.currentTurnSeat,
+    diceValue: populated.lastDiceValue,
+    diceResult: populated.lastDiceValue,
+    diceStatus: populated.turnStatus === "WAITING_FOR_ROLL" ? "waiting" : "rolled",
+    tokens: tokensMap,
+    gamePhase,
+    gameStatus: populated.status === "in_progress" ? "active" : populated.status,
+    status: populated.status,
+    remainingTimeSeconds: remainingSeconds(populated),
+    winner: populated.winner,
+    updatedAt: populated.updatedAt,
+    state: formatted,
+  };
+};
+
+const reconnectMatch = async (userId, gameId) => {
+  const gameState = await getAuthoritativeGameState(userId, gameId);
+  const socketManager = require("../../../sockets/socketManager");
+  socketManager.emitToSession(gameState.sessionId || gameState.gameId, "player_reconnected", {
+    gameId: String(gameState.gameId),
+    sessionId: String(gameState.sessionId || gameState.gameId),
+    playerId: String(userId),
+    userId: String(userId),
+    state: gameState.state || gameState,
+  });
+  return gameState;
+};
+
 module.exports = {
   startGame,
   getSession,
@@ -604,6 +786,11 @@ module.exports = {
   surrenderMatch,
   completeMatch,
   getHistory,
+  createMatch,
+  joinMatch,
+  findSessionByGameId,
+  getAuthoritativeGameState,
+  reconnectMatch,
   // used by the sweeper
   settleSession,
   finishSettlement,

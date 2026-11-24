@@ -192,6 +192,66 @@ const getMyGameHistory = asyncHandler(async (req, res) => {
   return res.status(200).json({ success: true, data });
 });
 
+// Online Match API: Create Match (POST /api/games/create)
+const createMatch = asyncHandler(async (req, res) => {
+  const result = await gameService.createMatch(req.user, req.body);
+  return res.status(201).json({
+    success: true,
+    message: "Match created successfully",
+    data: result,
+  });
+});
+
+// Online Match API: Join Match (POST /api/games/join)
+const joinMatch = asyncHandler(async (req, res) => {
+  const result = await gameService.joinMatch(req.user, req.body.roomCode);
+
+  try {
+    if (result.session) {
+      const st = socketManager.formatSessionState(result.session);
+      socketManager.emitToRoom(result.roomCode, "match_started", {
+        roomCode: result.roomCode,
+        gameId: String(result.session._id),
+        sessionId: String(result.session._id),
+        session: st,
+        state: st,
+      });
+      socketManager.emitToSession(result.session._id, "match_started", {
+        roomCode: result.roomCode,
+        gameId: String(result.session._id),
+        sessionId: String(result.session._id),
+        session: st,
+        state: st,
+      });
+    }
+  } catch (_) {}
+
+  return res.status(200).json({
+    success: true,
+    message: result.session ? "Joined match. Game is starting!" : "Joined match successfully. Waiting for opponent.",
+    data: result,
+  });
+});
+
+// Online Match API: Get Game State (GET /api/games/:gameId)
+const getGameState = asyncHandler(async (req, res) => {
+  const state = await gameService.getAuthoritativeGameState(req.user._id, req.params.gameId);
+  return res.status(200).json({
+    success: true,
+    data: state,
+  });
+});
+
+// Online Match API: Reconnect Match (POST /api/games/:gameId/reconnect)
+const reconnectMatch = asyncHandler(async (req, res) => {
+  const state = await gameService.reconnectMatch(req.user._id, req.params.gameId);
+  return res.status(200).json({
+    success: true,
+    message: "Reconnected to match successfully",
+    data: state,
+  });
+});
+
 module.exports = {
   startGameSession,
   getGameSession,
@@ -201,4 +261,8 @@ module.exports = {
   surrenderMatch,
   completeGameSession,
   getMyGameHistory,
+  createMatch,
+  joinMatch,
+  getGameState,
+  reconnectMatch,
 };

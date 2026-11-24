@@ -13,6 +13,10 @@ const {
   surrenderMatch,
   completeGameSession,
   getMyGameHistory,
+  createMatch,
+  joinMatch,
+  getGameState,
+  reconnectMatch,
 } = require("../controllers/game.controller");
 
 const {
@@ -21,7 +25,32 @@ const {
   sessionIdParamValidation,
   moveTokenValidation,
   historyQueryValidation,
+  createMatchValidation,
+  joinMatchValidation,
+  gameIdParamValidation,
 } = require("../validations/game.validation");
+
+// ==========================================
+// Online Match: Create Match
+// ==========================================
+router.post(
+  "/create",
+  protect,
+  createMatchValidation,
+  validateRequest,
+  createMatch
+);
+
+// ==========================================
+// Online Match: Join Match
+// ==========================================
+router.post(
+  "/join",
+  protect,
+  joinMatchValidation,
+  validateRequest,
+  joinMatch
+);
 
 // ==========================================
 // 1. Start / Initialize Game Session
@@ -113,6 +142,28 @@ router.post(
   sessionIdParamValidation,
   validateRequest,
   completeGameSession
+);
+
+// ==========================================
+// 9. Reconnect Match (POST /api/games/:gameId/reconnect)
+// ==========================================
+router.post(
+  "/:gameId/reconnect",
+  protect,
+  gameIdParamValidation,
+  validateRequest,
+  reconnectMatch
+);
+
+// ==========================================
+// 10. Get Game State (GET /api/games/:gameId)
+// ==========================================
+router.get(
+  "/:gameId",
+  protect,
+  gameIdParamValidation,
+  validateRequest,
+  getGameState
 );
 
 module.exports = router;
