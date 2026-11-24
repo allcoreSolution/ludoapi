@@ -15,6 +15,7 @@ const { globalLimiter } = require("./middleware/rateLimit.middleware");
 const authRoutes = require("./src/modules/auth/routes/auth.routes");
 const userRoutes = require("./src/modules/users/routes/user.routes");
 const roomRoutes = require("./src/modules/rooms/routes/room.routes");
+const matchmakingRoutes = require("./src/modules/matchmaking/routes/matchmaking.routes");
 const gameRoutes = require("./src/modules/games/routes/game.routes");
 const leaderboardRoutes = require("./src/modules/leaderboard/routes/leaderboard.routes");
 const rewardRoutes = require("./src/modules/rewards/routes/reward.routes");
@@ -136,6 +137,7 @@ app.get("/ready", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/rooms", roomRoutes);
+app.use("/api/matchmaking", matchmakingRoutes);
 app.use("/api/games", gameRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/rewards", rewardRoutes);

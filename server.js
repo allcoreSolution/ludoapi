@@ -10,6 +10,7 @@ const { seedDefaultRewards } = require("./src/modules/rewards/controllers/reward
 const { seedDevelopmentAdmin } = require("./src/modules/admin/seed/development-admin.seed");
 const sweeper = require("./jobs/matchSweeper");
 const Admin = require("./src/modules/admin/models/admin.model");
+const socketManager = require("./src/sockets/socketManager");
 
 let server;
 let stopSweeper = () => {};
@@ -37,6 +38,7 @@ const startServer = async () => {
   }
 
   server = http.createServer(app);
+  socketManager.init(server);
 
   // Safe defaults for running behind a load balancer / reverse proxy.
   server.keepAliveTimeout = 65_000; // must be > the proxy's idle timeout (AWS ALB = 60s)
@@ -65,6 +67,7 @@ const shutdown = async (signal, exitCode = 0) => {
 
   try {
     stopSweeper();
+    await socketManager.close();
     if (server) await new Promise((resolve) => server.close(resolve));
     await disconnectDB();
     logger.info("shutdown_complete");

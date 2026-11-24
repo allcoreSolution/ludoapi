@@ -18,13 +18,14 @@ const logger = require("../utils/logger");
 const GameSession = require("../src/modules/games/models/GameSession");
 const gameService = require("../src/modules/games/services/game.service");
 const roomService = require("../src/modules/rooms/services/room.service");
+const matchmakingService = require("../src/modules/matchmaking/services/matchmaking.service");
 
 const BATCH = 100;
 let lastRoomCleanup = 0;
 
 const sweepOnce = async () => {
   const now = Date.now();
-  const stats = { matchesClosed: 0, turnsTimedOut: 0, settlementsRecovered: 0, roomsCancelled: 0 };
+  const stats = { matchesClosed: 0, turnsTimedOut: 0, settlementsRecovered: 0, roomsCancelled: 0, queuesExpired: 0 };
 
   // 1) match clock expired
   const expired = await GameSession.find({
@@ -94,6 +95,13 @@ const sweepOnce = async () => {
     }
   }
 
+  // 5) expired matchmaking queues
+  try {
+    stats.queuesExpired = await matchmakingService.sweepExpiredQueues(BATCH);
+  } catch (error) {
+    logger.error("sweeper_matchmaking_cleanup_failed", { err: error });
+  }
+
   return stats;
 };
 
@@ -107,7 +115,7 @@ const start = () => {
     running = true;
     try {
       const s = await sweepOnce();
-      if (s.matchesClosed || s.turnsTimedOut || s.settlementsRecovered || s.roomsCancelled) {
+      if (s.matchesClosed || s.turnsTimedOut || s.settlementsRecovered || s.roomsCancelled || s.queuesExpired) {
         logger.info("sweeper_tick", s);
       }
     } catch (error) {

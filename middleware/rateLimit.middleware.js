@@ -137,4 +137,12 @@ module.exports = {
     max: rl.gameActionsPerMinute,
     keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
   }),
+
+  // Matchmaking queue actions, per authenticated user.
+  matchmakingLimiter: createRateLimiter({
+    windowMs: 60_000,
+    max: 60,
+    keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
+    message: "Too many matchmaking requests. Please slow down.",
+  }),
 };

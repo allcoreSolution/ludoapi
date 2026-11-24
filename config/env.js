@@ -139,6 +139,10 @@ function loadConfig(env = process.env) {
       roomWaitingTtlMinutes: toInt(env.ROOM_WAITING_TTL_MIN, 30),
     },
 
+    matchmaking: {
+      queueTimeoutSeconds: toInt(env.MATCHMAKING_QUEUE_TIMEOUT_SECONDS, 60),
+    },
+
     razorpay: {
       keyId: env.RAZORPAY_KEY_ID || "",
       keySecret: env.RAZORPAY_KEY_SECRET || "",
