@@ -2,6 +2,7 @@
 
 const asyncHandler = require("../../../../utils/asyncHandler");
 const roomService = require("../services/room.service");
+const socketManager = require("../../../sockets/socketManager");
 
 // 1. Create New Game Room
 const createRoom = asyncHandler(async (req, res) => {
@@ -16,6 +17,18 @@ const createRoom = asyncHandler(async (req, res) => {
 // 2. Join Existing Game Room
 const joinRoom = asyncHandler(async (req, res) => {
   const result = await roomService.joinRoom(req.user, req.body.roomCode);
+
+  try {
+    const roomCode = req.body.roomCode.trim().toUpperCase();
+    socketManager.emitToRoom(roomCode, "player_joined", {
+      roomCode,
+      room: result.room,
+      userId: String(req.user._id),
+      name: req.user.name,
+      assignedColor: result.assignedColor,
+      seatIndex: result.seatIndex,
+    });
+  } catch (_) {}
 
   if (result.alreadyInRoom) {
     return res.status(200).json({
@@ -45,6 +58,22 @@ const getRoomDetails = asyncHandler(async (req, res) => {
 // 4. Leave / Cancel Game Room
 const leaveRoom = asyncHandler(async (req, res) => {
   const result = await roomService.leaveRoom(req.user, req.body.roomCode);
+
+  try {
+    const roomCode = req.body.roomCode.trim().toUpperCase();
+    if (result.hostCancelled) {
+      socketManager.emitToRoom(roomCode, "room_cancelled", {
+        roomCode,
+        room: result.room,
+      });
+    } else {
+      socketManager.emitToRoom(roomCode, "player_left", {
+        roomCode,
+        room: result.room,
+        userId: String(req.user._id),
+      });
+    }
+  } catch (_) {}
 
   if (result.hostCancelled) {
     return res.status(200).json({

@@ -336,6 +336,7 @@ const rollDice = async (userId, sessionId) => {
           turnPassed: true,
           currentTurnPlayer: session.currentTurnPlayer,
           currentTurnSeat: session.currentTurnSeat,
+          session,
         },
       };
     }
@@ -357,6 +358,7 @@ const rollDice = async (userId, sessionId) => {
         turnPassed: true,
         currentTurnPlayer: session.currentTurnPlayer,
         currentTurnSeat: session.currentTurnSeat,
+        session,
       },
     };
   }
@@ -373,6 +375,7 @@ const rollDice = async (userId, sessionId) => {
       movableTokenIds,
       turnStatus: session.turnStatus,
       turnDeadline: session.turnDeadline,
+      session,
     },
   };
 };
