@@ -15,13 +15,30 @@ const startGameSession = asyncHandler(async (req, res) => {
 
   try {
     if (session) {
+      socketManager.joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
       const st = socketManager.formatSessionState(session);
-      socketManager.emitToRoom(roomCode, "match_started", {
+      const payload = {
+        roomId: roomCode,
         roomCode,
+        gameId: String(session._id),
         sessionId: String(session._id),
+        matchId: String(session._id),
+        turnNumber: session.turnNumber || 1,
+        stateVersion: session.actionSequence || session.__v || 0,
+        actionSequence: session.actionSequence || session.__v || 0,
+        gamePhase: session.gamePhase || "waiting_for_roll",
+        phase: session.gamePhase || "waiting_for_roll",
+        currentPlayerId: String(session.currentTurnPlayer),
+        currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+        players: st.players,
+        tokens: st.tokens,
         session: st,
         state: st,
-      });
+        gameState: st,
+      };
+      socketManager.emitToGame(session, "match_started", payload);
+      socketManager.emitToGame(session, "game_started", payload);
+      socketManager.emitToGame(session, "game_state", { state: st, gameState: st });
     }
   } catch (_) {}
 
@@ -49,6 +66,7 @@ const rollDice = asyncHandler(async (req, res) => {
   try {
     const updatedSession = await GameSession.findById(req.params.sessionId);
     if (updatedSession) {
+      socketManager.joinUsersToSession(updatedSession.players.map((p) => p.user?._id || p.user), updatedSession);
       const st = socketManager.formatSessionState(updatedSession);
       const payload = {
         roomId: updatedSession.roomCode,
@@ -73,8 +91,32 @@ const rollDice = asyncHandler(async (req, res) => {
         state: st,
         gameState: st,
       };
-      socketManager.emitToSession(req.params.sessionId, "dice_roll_result", payload);
-      socketManager.emitToSession(req.params.sessionId, "dice_rolled", payload);
+      socketManager.emitToGame(updatedSession, "dice_roll_result", payload);
+      socketManager.emitToGame(updatedSession, "dice_rolled", payload);
+
+      if (data.turnPassed) {
+        socketManager.emitToGame(updatedSession, "turn_changed", {
+          roomId: updatedSession.roomCode,
+          roomCode: updatedSession.roomCode,
+          gameId: String(req.params.sessionId),
+          sessionId: String(req.params.sessionId),
+          matchId: String(req.params.sessionId),
+          currentPlayerId: String(updatedSession.currentTurnPlayer),
+          currentTurnSeat: updatedSession.currentTurnSeat,
+          currentSeat: updatedSession.currentTurnSeat,
+          turnNumber: updatedSession.turnNumber || 1,
+          stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+          actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+          actionId,
+          getsExtraTurn: false,
+          gamePhase: updatedSession.gamePhase,
+          phase: updatedSession.gamePhase,
+          turn: st.turn,
+          state: st,
+          gameState: st,
+        });
+      }
+      socketManager.emitToGame(updatedSession, "game_state", { state: st, gameState: st });
     }
   } catch (_) {}
 
@@ -94,6 +136,7 @@ const moveToken = asyncHandler(async (req, res) => {
   try {
     const updatedSession = await GameSession.findById(req.params.sessionId);
     if (updatedSession) {
+      socketManager.joinUsersToSession(updatedSession.players.map((p) => p.user?._id || p.user), updatedSession);
       const st = socketManager.formatSessionState(updatedSession);
       const payload = {
         roomId: updatedSession.roomCode,
@@ -114,7 +157,30 @@ const moveToken = asyncHandler(async (req, res) => {
         state: st,
         gameState: st,
       };
-      socketManager.emitToSession(req.params.sessionId, "token_moved", payload);
+      socketManager.emitToGame(updatedSession, "token_moved", payload);
+
+      if (!data.gameCompleted) {
+        socketManager.emitToGame(updatedSession, "turn_changed", {
+          roomId: updatedSession.roomCode,
+          roomCode: updatedSession.roomCode,
+          gameId: String(req.params.sessionId),
+          sessionId: String(req.params.sessionId),
+          matchId: String(req.params.sessionId),
+          currentPlayerId: String(updatedSession.currentTurnPlayer),
+          currentTurnSeat: updatedSession.currentTurnSeat,
+          currentSeat: updatedSession.currentTurnSeat,
+          turnNumber: updatedSession.turnNumber || 1,
+          stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+          actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+          actionId,
+          getsExtraTurn: Boolean(data.move?.getsExtraTurn),
+          gamePhase: updatedSession.gamePhase,
+          phase: updatedSession.gamePhase,
+          turn: st.turn,
+          state: st,
+          gameState: st,
+        });
+      }
 
       if (data.gameCompleted) {
         const finishedPayload = {
@@ -130,14 +196,17 @@ const moveToken = asyncHandler(async (req, res) => {
             : null,
           ranking: updatedSession.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
           gamePhase: "game_over",
+          phase: "game_over",
           turnNumber: updatedSession.turnNumber || 1,
           stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
           state: st,
           gameState: st,
         };
-        socketManager.emitToSession(req.params.sessionId, "game_over", finishedPayload);
-        socketManager.emitToSession(req.params.sessionId, "match_finished", finishedPayload);
+        socketManager.emitToGame(updatedSession, "game_over", finishedPayload);
+        socketManager.emitToGame(updatedSession, "match_finished", finishedPayload);
       }
+
+      socketManager.emitToGame(updatedSession, "game_state", { state: st, gameState: st });
     }
   } catch (_) {}
 
@@ -231,21 +300,30 @@ const joinMatch = asyncHandler(async (req, res) => {
 
   try {
     if (result.session) {
+      socketManager.joinUsersToSession(result.session.players.map((p) => p.user?._id || p.user), result.session);
       const st = socketManager.formatSessionState(result.session);
-      socketManager.emitToRoom(result.roomCode, "match_started", {
+      const payload = {
+        roomId: result.roomCode,
         roomCode: result.roomCode,
         gameId: String(result.session._id),
         sessionId: String(result.session._id),
+        matchId: String(result.session._id),
+        turnNumber: result.session.turnNumber || 1,
+        stateVersion: result.session.actionSequence || result.session.__v || 0,
+        actionSequence: result.session.actionSequence || result.session.__v || 0,
+        gamePhase: result.session.gamePhase || "waiting_for_roll",
+        phase: result.session.gamePhase || "waiting_for_roll",
+        currentPlayerId: String(result.session.currentTurnPlayer),
+        currentSeat: result.session.currentTurnSeat !== undefined ? result.session.currentTurnSeat : 0,
+        players: st.players,
+        tokens: st.tokens,
         session: st,
         state: st,
-      });
-      socketManager.emitToSession(result.session._id, "match_started", {
-        roomCode: result.roomCode,
-        gameId: String(result.session._id),
-        sessionId: String(result.session._id),
-        session: st,
-        state: st,
-      });
+        gameState: st,
+      };
+      socketManager.emitToGame(result.session, "match_started", payload);
+      socketManager.emitToGame(result.session, "game_started", payload);
+      socketManager.emitToGame(result.session, "game_state", { state: st, gameState: st });
     }
   } catch (_) {}
 

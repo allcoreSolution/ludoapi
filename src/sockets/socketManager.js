@@ -50,25 +50,40 @@ const isUserOnline = (userId) => (presence.get(String(userId))?.size || 0) > 0;
  * socket that joined both receive the event twice -> dice animation played twice).
  */
 const gameRooms = (session, extraId) => {
-  const sid = String(session._id);
+  if (!session) return [];
+  const sid = String(session._id || session.sessionId || session.gameId);
   const rooms = new Set([`session:${sid}`, `game:${sid}`]);
   if (session.room) rooms.add(`game:${String(session.room)}`); // createMatch returns roomId as gameId
-  if (extraId) rooms.add(`game:${String(extraId)}`);
+  if (session.roomCode) {
+    rooms.add(`room:${String(session.roomCode).toUpperCase()}`);
+    rooms.add(`room:${String(session.roomCode)}`);
+    rooms.add(`game:${String(session.roomCode).toUpperCase()}`);
+  }
+  if (extraId) {
+    rooms.add(`game:${String(extraId)}`);
+  }
   return [...rooms];
 };
 
 const joinSocketToSession = (socket, session) => {
   socket.join(gameRooms(session));
-  if (session.roomCode) socket.join(`room:${String(session.roomCode).toUpperCase()}`);
+  if (session.roomCode) {
+    socket.join(`room:${String(session.roomCode).toUpperCase()}`);
+    socket.join(`room:${String(session.roomCode)}`);
+  }
 };
 
 /** Server-side join: both players receive game events even if the app forgets to join_session. */
 const joinUsersToSession = (userIds, session) => {
-  if (!io || !session) return false;
+  if (!io || !session || !userIds) return false;
   const rooms = gameRooms(session);
-  if (session.roomCode) rooms.push(`room:${String(session.roomCode).toUpperCase()}`);
+  if (session.roomCode) {
+    rooms.push(`room:${String(session.roomCode).toUpperCase()}`);
+    rooms.push(`room:${String(session.roomCode)}`);
+  }
   for (const uid of userIds) {
-    io.in(`user:${String(uid)}`).socketsJoin(rooms);
+    const id = uid?._id ? String(uid._id) : String(uid);
+    io.in(`user:${id}`).socketsJoin(rooms);
   }
   return true;
 };
@@ -117,6 +132,40 @@ const formatSessionState = (session) => {
   const roomId = session.room ? String(session.room?._id || session.room) : roomCode;
   const matchId = String(session._id);
 
+  const tokensMap = {};
+  for (const p of session.players || []) {
+    const pid = String(p.user?._id || p.user);
+    tokensMap[pid] = (p.tokens || []).map((t) => ({
+      tokenId: t.tokenId,
+      step: t.step,
+      isHome: Boolean(t.isHome),
+    }));
+  }
+
+  const playersList = (session.players || []).map((p) => {
+    const uid = String(p.user?._id || p.user);
+    const online = isUserOnline(uid);
+    return {
+      userId: uid,
+      playerId: uid,
+      name: p.name,
+      avatar: p.avatar || "",
+      seat: p.seatIndex,
+      seatIndex: p.seatIndex,
+      color: p.color,
+      score: p.score || 0,
+      hasSurrendered: Boolean(p.hasSurrendered),
+      online,
+      connected: online,
+      tokens: (p.tokens || []).map((t) => ({
+        tokenId: t.tokenId,
+        step: t.step,
+        isHome: Boolean(t.isHome),
+      })),
+      rank: p.rank || null,
+    };
+  });
+
   return {
     roomId,
     roomCode,
@@ -124,8 +173,8 @@ const formatSessionState = (session) => {
     sessionId: matchId,
     gameId: matchId,
     gameMode: session.gameMode || "twoPlayer",
-    status: session.status,
-    gameStatus: session.status,
+    status: session.status === "in_progress" ? "playing" : session.status,
+    gameStatus: session.status === "in_progress" ? "playing" : session.status,
     gamePhase: phase,
     phase,
     turnNumber: session.turnNumber || 1,
@@ -133,9 +182,19 @@ const formatSessionState = (session) => {
     actionSequence: session.actionSequence || session.__v || 0,
     lastActionId: session.lastActionId || null,
     currentPlayerId: String(session.currentTurnPlayer),
+    currentTurnPlayer: String(session.currentTurnPlayer),
+    currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+    currentTurnSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+    diceValue: session.lastDiceValue || null,
+    diceRolled: Boolean(session.lastDiceValue),
+    legalMoves: movableTokenIds,
+    movableTokenIds,
+    tokens: tokensMap,
     turn: {
       userId: String(session.currentTurnPlayer),
-      seatIndex: session.currentTurnSeat,
+      playerId: String(session.currentTurnPlayer),
+      seat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+      seatIndex: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
       status: session.turnStatus,
       phase,
       gamePhase: phase,
@@ -146,22 +205,8 @@ const formatSessionState = (session) => {
       movableTokenIds,
       legalMoves: movableTokenIds,
     },
-    players: (session.players || []).map((p) => ({
-      userId: String(p.user?._id || p.user),
-      name: p.name,
-      avatar: p.avatar || "",
-      seatIndex: p.seatIndex,
-      color: p.color,
-      score: p.score || 0,
-      hasSurrendered: Boolean(p.hasSurrendered),
-      online: isUserOnline(p.user?._id || p.user),
-      tokens: (p.tokens || []).map((t) => ({
-        tokenId: t.tokenId,
-        step: t.step,
-        isHome: Boolean(t.isHome),
-      })),
-      rank: p.rank || null,
-    })),
+    players: playersList,
+    winner: session.winner ? String(session.winner?._id || session.winner) : null,
     winnerId: session.winner ? String(session.winner?._id || session.winner) : null,
   };
 };
@@ -173,10 +218,10 @@ const formatSessionState = (session) => {
 const viewerView = (state, userId) => {
   if (!state) return state;
   const uid = String(userId);
-  const mine = (state.players || []).find((p) => p.userId === uid);
+  const mine = (state.players || []).find((p) => p.userId === uid || p.playerId === uid);
   if (!mine) return state;
-  const live = state.status === "in_progress";
-  const isMyTurn = live && state.turn.userId === uid && !mine.hasSurrendered;
+  const live = state.status === "in_progress" || state.status === "playing";
+  const isMyTurn = live && (state.turn.userId === uid || state.turn.playerId === uid) && !mine.hasSurrendered;
   const canRoll = isMyTurn && (state.gamePhase === "waiting_for_roll" || state.turn.status === "WAITING_FOR_ROLL");
   const canMove = isMyTurn && (state.gamePhase === "waiting_for_move" || state.turn.status === "WAITING_FOR_MOVE");
   const legalMoves = canMove ? (state.turn.legalMoves || state.turn.movableTokenIds || []) : [];
@@ -185,7 +230,9 @@ const viewerView = (state, userId) => {
     ...state,
     me: {
       userId: uid,
-      seatIndex: mine.seatIndex,
+      playerId: uid,
+      seat: mine.seatIndex !== undefined ? mine.seatIndex : mine.seat,
+      seatIndex: mine.seatIndex !== undefined ? mine.seatIndex : mine.seat,
       color: mine.color,
       isMyTurn,
       canRoll,
@@ -415,9 +462,9 @@ const init = (httpServer) => {
     });
 
     // 1. Join Room Lobby
-    socket.on("join_room", (data, ack) => {
+    socket.on("join_room", async (data, ack) => {
       try {
-        const roomCode = (data?.roomCode || "").trim().toUpperCase();
+        const roomCode = (data?.roomCode || data?.roomId || "").trim().toUpperCase();
         if (!roomCode) {
           if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "roomCode is required" });
           return;
@@ -425,9 +472,23 @@ const init = (httpServer) => {
         socket.join(`room:${roomCode}`);
         io.to(`room:${roomCode}`).emit("player_joined", {
           roomCode,
+          roomId: roomCode,
           userId,
+          playerId: userId,
           name: socket.user.name,
+          avatar: socket.user.avatar || "",
         });
+
+        // If a game session is already in progress for this roomCode, join and sync immediately
+        try {
+          const activeSession = await GameSession.findOne({ roomCode, status: "in_progress" });
+          if (activeSession) {
+            joinSocketToSession(socket, activeSession);
+            const st = formatSessionState(activeSession);
+            socket.emit("game_state", { state: st, gameState: st });
+          }
+        } catch (_) {}
+
         if (typeof ack === "function") ack({ ok: true, roomCode });
       } catch (err) {
         logger.error("socket_join_room_error", { err: err.message, userId });
@@ -438,12 +499,14 @@ const init = (httpServer) => {
     // 2. Leave Room Lobby
     socket.on("leave_room", (data, ack) => {
       try {
-        const roomCode = (data?.roomCode || "").trim().toUpperCase();
+        const roomCode = (data?.roomCode || data?.roomId || "").trim().toUpperCase();
         if (roomCode) {
           socket.leave(`room:${roomCode}`);
           io.to(`room:${roomCode}`).emit("player_left", {
             roomCode,
+            roomId: roomCode,
             userId,
+            playerId: userId,
           });
         }
         if (typeof ack === "function") ack({ ok: true });
@@ -455,7 +518,7 @@ const init = (httpServer) => {
     // 3. Join Match Session (Session channel synchronization)
     const handleJoinSession = async (data, ack) => {
       try {
-        const sid = data?.sessionId || data?.gameId || data?.roomCode;
+        const sid = data?.sessionId || data?.gameId || data?.matchId || data?.roomId || data?.roomCode;
         if (!sid) {
           if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId or gameId is required" });
           return;
@@ -467,23 +530,28 @@ const init = (httpServer) => {
           return;
         }
 
-        socket.join(`session:${session._id}`);
-        socket.join(`game:${session._id}`);
-        if (data?.gameId) socket.join(`game:${data.gameId}`);
-        if (session.roomCode) socket.join(`room:${session.roomCode}`);
+        joinSocketToSession(socket, session);
+        joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
 
         const st = formatSessionState(session);
         const joinPayload = {
+          roomId: session.roomCode,
+          roomCode: session.roomCode,
           gameId: String(session._id),
           sessionId: String(session._id),
+          matchId: String(session._id),
           userId,
           playerId: userId,
           name: socket.user.name,
+          turnNumber: session.turnNumber || 1,
+          stateVersion: session.actionSequence || session.__v || 0,
+          actionSequence: session.actionSequence || session.__v || 0,
           state: st,
           gameState: st,
         };
 
-        io.to(`session:${session._id}`).emit("player_reconnected", joinPayload);
+        const rooms = gameRooms(session, data?.gameId);
+        io.to(rooms).emit("player_reconnected", joinPayload);
         socket.emit("game_state", { state: st, gameState: st });
 
         if (typeof ack === "function") ack({ ok: true, data: { state: st, gameState: st } });
@@ -499,9 +567,13 @@ const init = (httpServer) => {
     // 4. Start Match
     socket.on("start_match", async (data, ack) => {
       try {
-        const roomCode = (data?.roomCode || "").trim().toUpperCase();
+        const roomCode = (data?.roomCode || data?.roomId || "").trim().toUpperCase();
         const { session } = await gameService.startGame(socket.user._id, roomCode);
+        joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
+        joinSocketToSession(socket, session);
+
         const st = formatSessionState(session);
+        const rooms = gameRooms(session);
         const payload = {
           roomId: roomCode,
           roomCode,
@@ -513,16 +585,18 @@ const init = (httpServer) => {
           actionSequence: session.actionSequence || session.__v || 0,
           gamePhase: session.gamePhase || "waiting_for_roll",
           phase: session.gamePhase || "waiting_for_roll",
+          currentPlayerId: String(session.currentTurnPlayer),
+          currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+          players: st.players,
+          tokens: st.tokens,
           session: st,
           state: st,
           gameState: st,
         };
-        io.to(`room:${roomCode}`).emit("match_started", payload);
-        io.to(`room:${roomCode}`).emit("game_started", payload);
-        io.to(`session:${session._id}`).emit("match_started", payload);
-        io.to(`session:${session._id}`).emit("game_started", payload);
-        io.to(`game:${session._id}`).emit("match_started", payload);
-        io.to(`game:${session._id}`).emit("game_started", payload);
+
+        io.to(rooms).emit("match_started", payload);
+        io.to(rooms).emit("game_started", payload);
+        io.to(rooms).emit("game_state", { state: st, gameState: st });
         if (typeof ack === "function") ack({ ok: true, data: payload });
       } catch (err) {
         logger.error("socket_start_match_error", { err: err.message, userId });
@@ -539,7 +613,7 @@ const init = (httpServer) => {
 
     // 5. Server Authoritative Dice Roll
     const handleRollDice = async (data, ack) => {
-      const sid = data?.sessionId || data?.gameId;
+      const sid = data?.sessionId || data?.gameId || data?.matchId || data?.roomId || data?.roomCode;
       if (!sid) {
         if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId or gameId is required" });
         return;
@@ -552,6 +626,8 @@ const init = (httpServer) => {
             if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
             return;
           }
+
+          joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
 
           const actionId = data?.actionId || null;
           const { message, data: rollData } = await gameService.rollDice(socket.user._id, session._id, { actionId });
@@ -598,6 +674,7 @@ const init = (httpServer) => {
               matchId: String(session._id),
               currentPlayerId: String(updatedSession.currentTurnPlayer),
               currentTurnSeat: updatedSession.currentTurnSeat,
+              currentSeat: updatedSession.currentTurnSeat,
               turnNumber: updatedSession.turnNumber || 1,
               stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
               actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
@@ -646,8 +723,8 @@ const init = (httpServer) => {
 
     // 6. Real-Time Token Movement
     const handleMoveToken = async (data, ack) => {
-      const sid = data?.sessionId || data?.gameId;
-      const tokenId = data?.tokenId;
+      const sid = data?.sessionId || data?.gameId || data?.matchId || data?.roomId || data?.roomCode;
+      const tokenId = data?.tokenId !== undefined ? data?.tokenId : (data?.tokenIndex !== undefined ? data?.tokenIndex : data?.token);
       if (!sid || tokenId === undefined) {
         if (typeof ack === "function") {
           ack({ ok: false, code: "BAD_REQUEST", message: "sessionId/gameId and tokenId are required" });
@@ -662,6 +739,8 @@ const init = (httpServer) => {
             if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
             return;
           }
+
+          joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
 
           const actionId = data?.actionId || null;
           const { message, data: moveData } = await gameService.moveToken(socket.user._id, session._id, tokenId, { actionId });
@@ -702,6 +781,7 @@ const init = (httpServer) => {
               matchId: String(session._id),
               currentPlayerId: String(updatedSession.currentTurnPlayer),
               currentTurnSeat: updatedSession.currentTurnSeat,
+              currentSeat: updatedSession.currentTurnSeat,
               turnNumber: updatedSession.turnNumber || 1,
               stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
               actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
@@ -729,6 +809,7 @@ const init = (httpServer) => {
               winnerId: moveData.winner ? String(moveData.winner) : (updatedSession.winner ? String(updatedSession.winner) : null),
               ranking: updatedSession.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
               gamePhase: "game_over",
+              phase: "game_over",
               turnNumber: updatedSession.turnNumber || 1,
               stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
               state: st,
@@ -770,7 +851,7 @@ const init = (httpServer) => {
     // 6b. Request Game State
     socket.on("request_game_state", async (data, ack) => {
       try {
-        const sid = data?.sessionId || data?.gameId;
+        const sid = data?.sessionId || data?.gameId || data?.matchId || data?.roomId || data?.roomCode;
         const session = await gameService.findSessionByGameId(sid);
         if (!session) {
           if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
@@ -788,15 +869,22 @@ const init = (httpServer) => {
     // 6c. Player Reconnected
     socket.on("player_reconnected", async (data, ack) => {
       try {
-        const sid = data?.sessionId || data?.gameId;
+        const sid = data?.sessionId || data?.gameId || data?.matchId || data?.roomId || data?.roomCode;
         const session = await gameService.findSessionByGameId(sid);
         if (session) {
+          joinSocketToSession(socket, session);
           const st = formatSessionState(session);
-          io.to(`session:${session._id}`).emit("player_reconnected", {
+          const rooms = gameRooms(session);
+          io.to(rooms).emit("player_reconnected", {
+            roomId: session.roomCode,
+            roomCode: session.roomCode,
             gameId: String(session._id),
             sessionId: String(session._id),
+            matchId: String(session._id),
             userId,
             playerId: userId,
+            turnNumber: session.turnNumber || 1,
+            stateVersion: session.actionSequence || session.__v || 0,
             state: st,
             gameState: st,
           });
@@ -865,7 +953,19 @@ const init = (httpServer) => {
             channel: "session",
             id: sid,
             sessionId: sid,
+            gameId: sid,
             userId,
+            playerId: userId,
+          });
+        } else if (room.startsWith("room:")) {
+          const code = room.replace("room:", "");
+          socket.to(room).emit("player_disconnected", {
+            channel: "room",
+            id: code,
+            roomId: code,
+            roomCode: code,
+            userId,
+            playerId: userId,
           });
         }
       }
@@ -900,7 +1000,17 @@ const emitToUser = (userId, event, payload) => {
  */
 const emitToSession = (sessionId, event, payload) => {
   if (!io || !sessionId) return false;
-  io.to(`session:${String(sessionId)}`).emit(event, payload);
+  const sid = String(sessionId);
+  const rooms = new Set([`session:${sid}`, `game:${sid}`]);
+  if (payload?.roomCode) {
+    rooms.add(`room:${String(payload.roomCode).toUpperCase()}`);
+    rooms.add(`room:${String(payload.roomCode)}`);
+  }
+  if (payload?.roomId) {
+    rooms.add(`room:${String(payload.roomId).toUpperCase()}`);
+    rooms.add(`game:${String(payload.roomId)}`);
+  }
+  io.to([...rooms]).emit(event, payload);
   return true;
 };
 
@@ -909,7 +1019,16 @@ const emitToSession = (sessionId, event, payload) => {
  */
 const emitToRoom = (roomCode, event, payload) => {
   if (!io || !roomCode) return false;
-  io.to(`room:${String(roomCode).toUpperCase()}`).emit(event, payload);
+  const code = String(roomCode).toUpperCase();
+  const rooms = new Set([`room:${code}`, `room:${String(roomCode)}`]);
+  if (payload?.sessionId) {
+    rooms.add(`session:${String(payload.sessionId)}`);
+    rooms.add(`game:${String(payload.sessionId)}`);
+  }
+  if (payload?.gameId) {
+    rooms.add(`game:${String(payload.gameId)}`);
+  }
+  io.to([...rooms]).emit(event, payload);
   return true;
 };
 
@@ -918,11 +1037,21 @@ const emitToRoom = (roomCode, event, payload) => {
  */
 const emitToGame = (sessionOrId, event, payload) => {
   if (!io || !sessionOrId) return false;
-  const sid = typeof sessionOrId === "object" ? String(sessionOrId._id || sessionOrId.sessionId || sessionOrId.gameId) : String(sessionOrId);
-  io.to(`session:${sid}`).emit(event, payload);
-  io.to(`game:${sid}`).emit(event, payload);
-  if (typeof sessionOrId === "object" && sessionOrId.roomCode) {
-    io.to(`room:${String(sessionOrId.roomCode).toUpperCase()}`).emit(event, payload);
+  if (typeof sessionOrId === "object") {
+    const rooms = gameRooms(sessionOrId);
+    io.to(rooms).emit(event, payload);
+  } else {
+    const sid = String(sessionOrId);
+    const rooms = new Set([`session:${sid}`, `game:${sid}`]);
+    if (payload?.roomCode) {
+      rooms.add(`room:${String(payload.roomCode).toUpperCase()}`);
+      rooms.add(`room:${String(payload.roomCode)}`);
+    }
+    if (payload?.roomId) {
+      rooms.add(`room:${String(payload.roomId).toUpperCase()}`);
+      rooms.add(`game:${String(payload.roomId)}`);
+    }
+    io.to([...rooms]).emit(event, payload);
   }
   return true;
 };
@@ -945,6 +1074,7 @@ module.exports = {
   viewerView,
   isUserOnline,
   gameRooms,
+  joinSocketToSession,
   joinUsersToSession,
   broadcastTurnChanged,
   broadcastGameState,

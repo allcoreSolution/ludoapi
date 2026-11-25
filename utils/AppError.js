@@ -11,6 +11,7 @@ class AppError extends Error {
     this.status = status;
     this.statusCode = status;
     this.isOperational = true;
+    this.code = extra?.code || null;
     this.extra = extra; // optional safe fields merged into the response body
     Error.captureStackTrace?.(this, this.constructor);
   }
