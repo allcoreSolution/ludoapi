@@ -104,10 +104,11 @@ test("broadcast helpers: timeout announces who missed, then the next turn", () =
   session.players[1].outcome = "win";
   session.players[1].prizeEarned = 90;
   socketManager.broadcastTimeoutResult(session, true);
-  assert.deepEqual(sent.map((e) => e.event), ["turn_timeout", "match_finished"]);
-  assert.equal(sent[1].payload.winnerId, "u2");
-  assert.equal(sent[1].payload.reason, "forfeit");
-  assert.equal(sent[1].payload.ranking.find((r) => r.userId === "u2").prizeEarned, 90);
+  assert.deepEqual(sent.map((e) => e.event), ["turn_timeout", "game_over", "match_finished"]);
+  const finished = sent.find((e) => e.event === "match_finished").payload;
+  assert.equal(finished.winnerId, "u2");
+  assert.equal(finished.reason, "forfeit");
+  assert.equal(finished.ranking.find((r) => r.userId === "u2").prizeEarned, 90);
 
   server.close();
 });

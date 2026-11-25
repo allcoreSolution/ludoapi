@@ -52,26 +52,38 @@ REST `roll-dice` / `move-token`) are unchanged.
 Use `canRoll` to enable the dice, `movableTokenIds` to make tokens tappable.
 The glowing red border in the UI = `state.turn.userId` (whose turn it is).
 
-## 3. Socket events
+## 3. Socket events & Validated State Machine
 
-Client -> server (all support an ack `{ ok, data | code, message }`):
-`roll_dice {sessionId}`, `move_token {sessionId, tokenId}`, `join_session {sessionId}`,
-`request_game_state {sessionId}`, `surrender_match {sessionId}`, `turn_timeout {sessionId}`.
+### Game Phases (Server Authoritative)
+- `waiting_for_roll`: Waiting for the active player to roll dice.
+- `rolling_dice`: Server validating roll and generating dice value.
+- `waiting_for_move`: Dice rolled, legal token moves calculated. Waiting for token selection.
+- `moving_token`: Server validating and applying movement, capture, and goals.
+- `turn_transition`: Transitioning between turns (or automatic pass if no moves).
+- `game_over`: Game settled, prizes distributed, no further actions allowed.
 
-Server -> client:
+### Client -> server events (all support ack `{ ok, data | code, message }`):
+- `dice_roll_requested` (alias: `roll_dice`): `{ sessionId, actionId? }`
+- `token_move_requested` (alias: `move_token`): `{ sessionId, tokenId, actionId? }`
+- `join_session` / `join_game`: `{ sessionId }`
+- `request_game_state`: `{ sessionId }`
+- `turn_timeout`: `{ sessionId }`
+- `surrender_match`: `{ sessionId }`
+
+### Server -> client events:
 
 | Event | When | Key fields |
 |---|---|---|
 | `active_game` | right after the socket connects, if a match is running | `sessionId`, `state` (with `me`) |
-| `match_found` / `match_started` | matchmaking pair found and game started | `sessionId`, `opponent`, `you`, `state` |
-| `dice_roll_result` (also `dice_rolled`) | someone rolled - **both phones** | `playerId`, `diceValue`, `movableTokenIds`, `turnPassed`, `threeSixes`, `state` |
-| `token_moved` | a token moved - both phones | `playerId`, `move {tokenId, prevStep, newStep, captured, getsExtraTurn}`, `state` |
-| `turn_changed` | next player / extra turn | `currentPlayerId`, `phase`, `reason?` (`timeout`), `state` |
-| `turn_timeout` | a player ran out of time (client **or server** detected it) | `userId`, `missedTurns` |
-| `player_disconnected` / `player_reconnected` | opponent left / is back | `userId`; `state.players[].online` is real now |
-| `match_finished` | match over (win, forfeit, time up) | `winnerId`, `reason`, `ranking[] {userId, rank, outcome, score, prizeEarned}` |
-| `game_state` | full snapshot | `state` |
-| `game_error` | rejected action | `code`, `message` |
+| `game_started` / `match_started` | match start | `roomId`, `sessionId`, `matchId`, `gamePhase`, `state` |
+| `dice_roll_result` (also `dice_rolled`) | dice rolled | `roomId`, `playerId`, `diceValue`, `legalMoves`, `movableTokenIds`, `turnPassed`, `threeSixes`, `turnNumber`, `stateVersion`, `gamePhase`, `state` |
+| `token_moved` | token moved | `roomId`, `playerId`, `tokenId`, `move`, `turnNumber`, `stateVersion`, `gamePhase`, `state` |
+| `turn_changed` | next turn or extra turn | `roomId`, `currentPlayerId`, `getsExtraTurn`, `turnNumber`, `stateVersion`, `gamePhase`, `turn`, `state` |
+| `invalid_move` / `game_error` | rejected move / out of turn | `code`, `message`, `playerId`, `actionId` |
+| `turn_timeout` | player missed 15s timer | `userId`, `missedTurns`, `state` |
+| `player_disconnected` / `player_reconnected` | player disconnect/reconnect | `userId`, `playerId`, `state` |
+| `game_over` / `match_finished` | match finished | `winnerId`, `reason`, `ranking`, `gamePhase: "game_over"`, `state` |
+| `game_state` | full state snapshot | `roomId`, `sessionId`, `state`, `gameState` |
 
 Each event is now delivered **once** per phone (before, a phone that joined both the `session:`
 and `game:` channel got `dice_roll_result` twice -> dice animated twice).

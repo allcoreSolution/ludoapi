@@ -9,6 +9,7 @@ class AppError extends Error {
     super(message);
     this.name = "AppError";
     this.status = status;
+    this.statusCode = status;
     this.isOperational = true;
     this.extra = extra; // optional safe fields merged into the response body
     Error.captureStackTrace?.(this, this.constructor);

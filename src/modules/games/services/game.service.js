@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const config = require("../../../../config/env");
 const AppError = require("../../../../utils/AppError");
 const logger = require("../../../../utils/logger");
-const { rollDie } = require("../../../../utils/secureRandom");
+const secureRandom = require("../../../../utils/secureRandom");
 
 const GameSession = require("../models/GameSession");
 const GameRoom = require("../../rooms/models/GameRoom");
@@ -51,7 +51,10 @@ const remainingSeconds = (session) =>
 
 const advanceTurn = (session) => {
   session.turnStatus = "WAITING_FOR_ROLL";
+  session.gamePhase = "waiting_for_roll";
   session.lastDiceValue = null;
+  session.turnNumber = (session.turnNumber || 1) + 1;
+  session.actionSequence = (session.actionSequence || 0) + 1;
   const next = engine.getNextActivePlayer(session.players, session.currentTurnSeat);
   if (next) {
     session.currentTurnPlayer = next.user;
@@ -88,6 +91,7 @@ const settleSession = async (sessionId, { forcedWinnerId = null, reason = "compl
         status: "completed",
         endedAt: new Date(),
         turnStatus: "TURN_COMPLETED",
+        gamePhase: "game_over",
         "settlement.reason": reason,
         "settlement.forcedWinner": forcedWinnerId || null,
       },
@@ -252,6 +256,10 @@ const startGame = async (userId, roomCode) => {
       currentTurnPlayer: first.user,
       currentTurnSeat: first.seatIndex,
       turnStatus: "WAITING_FOR_ROLL",
+      gamePhase: "waiting_for_roll",
+      turnNumber: 1,
+      actionSequence: 1,
+      lastActionId: null,
       turnDeadline: newDeadline(),
       players: seated.map((p) => ({
         user: p.user,
@@ -301,7 +309,8 @@ const getSession = async (userId, sessionId) => {
 // ------------------------------------------------------------------
 // 3. Roll dice
 // ------------------------------------------------------------------
-const rollDice = async (userId, sessionId) => {
+const rollDice = async (userId, sessionId, opts = {}) => {
+  const actionId = typeof opts === "object" && opts !== null ? opts.actionId || null : null;
   const session = await loadSession(sessionId);
   assertInProgress(session);
 
@@ -309,21 +318,49 @@ const rollDice = async (userId, sessionId) => {
     throw new AppError("Match time is over", 400);
   }
   if (String(session.currentTurnPlayer) !== String(userId)) {
-    throw new AppError("It is not your turn to roll the dice", 403);
+    throw new AppError("It is not your turn to roll the dice", 403, { code: "OUT_OF_TURN" });
   }
-  if (session.turnStatus !== "WAITING_FOR_ROLL") {
+
+  // Idempotency: duplicate request with same actionId returns current state
+  if (actionId && session.lastActionId === actionId) {
+    const curPlayer = getPlayer(session, userId);
+    const movableTokenIds = session.lastDiceValue
+      ? engine.getMovableTokenIds(curPlayer.tokens, session.lastDiceValue)
+      : [];
+    return {
+      message: "Action already processed",
+      data: {
+        diceValue: session.lastDiceValue,
+        legalMoves: movableTokenIds,
+        movableTokenIds,
+        turnPassed: session.turnStatus === "WAITING_FOR_ROLL",
+        turnStatus: session.turnStatus,
+        gamePhase: session.gamePhase || "waiting_for_move",
+        turnNumber: session.turnNumber || 1,
+        actionSequence: session.actionSequence || 0,
+        actionId,
+        session,
+      },
+    };
+  }
+
+  const phase = session.gamePhase || (session.turnStatus === "WAITING_FOR_MOVE" ? "waiting_for_move" : "waiting_for_roll");
+  if (phase !== "waiting_for_roll") {
     throw new AppError("Dice already rolled. Please move a token.", 400, {
-      data: { diceValue: session.lastDiceValue },
+      code: "ALREADY_ROLLED",
+      data: { diceValue: session.lastDiceValue, phase: session.gamePhase },
     });
   }
 
-  const diceValue = rollDie(); // crypto-grade randomness, decided on the server only
+  const diceValue = secureRandom.rollDie(); // crypto-grade randomness, decided on the server only
   const currentPlayer = getPlayer(session, userId);
   session.lastDiceValue = diceValue;
+  session.lastActionId = actionId;
+  session.actionSequence = (session.actionSequence || 0) + 1;
 
   // Rule: three consecutive 6s forfeits the turn.
   if (diceValue === 6) {
-    session.consecutiveSixes += 1;
+    session.consecutiveSixes = (session.consecutiveSixes || 0) + 1;
     if (session.consecutiveSixes >= 3) {
       session.consecutiveSixes = 0;
       advanceTurn(session);
@@ -335,8 +372,15 @@ const rollDice = async (userId, sessionId) => {
           diceValue: 6,
           consecutiveSixes: 3,
           turnPassed: true,
+          threeSixes: true,
+          legalMoves: [],
+          movableTokenIds: [],
           currentTurnPlayer: session.currentTurnPlayer,
           currentTurnSeat: session.currentTurnSeat,
+          turnNumber: session.turnNumber,
+          actionSequence: session.actionSequence,
+          actionId,
+          gamePhase: session.gamePhase,
           session,
         },
       };
@@ -355,16 +399,23 @@ const rollDice = async (userId, sessionId) => {
       message: `Rolled ${diceValue}. No valid moves available. Turn passed.`,
       data: {
         diceValue,
+        legalMoves: [],
         movableTokenIds: [],
         turnPassed: true,
+        threeSixes: false,
         currentTurnPlayer: session.currentTurnPlayer,
         currentTurnSeat: session.currentTurnSeat,
+        turnNumber: session.turnNumber,
+        actionSequence: session.actionSequence,
+        actionId,
+        gamePhase: session.gamePhase,
         session,
       },
     };
   }
 
   session.turnStatus = "WAITING_FOR_MOVE";
+  session.gamePhase = "waiting_for_move";
   session.turnDeadline = newDeadline();
   session.history.push({ player: userId, action: "ROLL", diceValue, timestamp: new Date() });
   await session.save();
@@ -373,8 +424,15 @@ const rollDice = async (userId, sessionId) => {
     message: `Rolled ${diceValue}. Choose a token to move.`,
     data: {
       diceValue,
+      legalMoves: movableTokenIds,
       movableTokenIds,
+      turnPassed: false,
+      threeSixes: false,
       turnStatus: session.turnStatus,
+      gamePhase: session.gamePhase,
+      turnNumber: session.turnNumber,
+      actionSequence: session.actionSequence,
+      actionId,
       turnDeadline: session.turnDeadline,
       session,
     },
@@ -384,7 +442,8 @@ const rollDice = async (userId, sessionId) => {
 // ------------------------------------------------------------------
 // 4. Move token
 // ------------------------------------------------------------------
-const moveToken = async (userId, sessionId, tokenId) => {
+const moveToken = async (userId, sessionId, tokenId, opts = {}) => {
+  const actionId = typeof opts === "object" && opts !== null ? opts.actionId || null : null;
   const session = await loadSession(sessionId);
   assertInProgress(session);
 
@@ -392,23 +451,52 @@ const moveToken = async (userId, sessionId, tokenId) => {
     throw new AppError("Match time is over", 400);
   }
   if (String(session.currentTurnPlayer) !== String(userId)) {
-    throw new AppError("It is not your turn to move", 403);
+    throw new AppError("It is not your turn to move", 403, { code: "OUT_OF_TURN" });
   }
-  if (session.turnStatus !== "WAITING_FOR_MOVE") {
-    throw new AppError("Please roll the dice before moving a token", 400);
+
+  if (actionId && session.lastActionId === actionId) {
+    return {
+      message: "Action already processed",
+      data: {
+        session,
+        actionId,
+        turnNumber: session.turnNumber || 1,
+        actionSequence: session.actionSequence || 0,
+        gamePhase: session.gamePhase,
+      },
+    };
+  }
+
+  const phase = session.gamePhase || (session.turnStatus === "WAITING_FOR_MOVE" ? "waiting_for_move" : "waiting_for_roll");
+  if (phase !== "waiting_for_move") {
+    throw new AppError("Please roll the dice before moving a token", 400, { code: "INVALID_PHASE" });
+  }
+
+  const currentPlayer = getPlayer(session, userId);
+  const legalMoves = engine.getMovableTokenIds(currentPlayer.tokens, session.lastDiceValue);
+  if (!legalMoves.includes(Number(tokenId))) {
+    throw new AppError(`Token ${tokenId} cannot be moved with dice value ${session.lastDiceValue}`, 400, {
+      code: "INVALID_MOVE",
+      data: { tokenId: Number(tokenId), legalMoves, diceValue: session.lastDiceValue },
+    });
   }
 
   const diceValue = session.lastDiceValue;
+  session.gamePhase = "moving_token";
+  session.lastActionId = actionId;
+  session.actionSequence = (session.actionSequence || 0) + 1;
+
   const move = mapRuleViolation(() =>
     engine.applyMove({ players: session.players, userId, tokenId, diceValue })
   );
 
   const getsExtraTurn =
-    (diceValue === 6 && session.consecutiveSixes < 3) || move.reachedHome || Boolean(move.captured);
+    (diceValue === 6 && (session.consecutiveSixes || 0) < 3) || move.reachedHome || Boolean(move.captured);
 
   if (move.allTokensHome) {
     // persist the winning move, then close the match with this player as forced winner
     session.turnStatus = "TURN_COMPLETED";
+    session.gamePhase = "game_over";
     session.history.push({
       player: userId, action: "MOVE", diceValue, tokenId: Number(tokenId),
       prevStep: move.prevStep, newStep: move.newStep, pointsEarned: move.pointsEarned, timestamp: new Date(),
@@ -419,12 +507,22 @@ const moveToken = async (userId, sessionId, tokenId) => {
     const finished = await settleSession(session._id, { forcedWinnerId: userId, reason: "all_tokens_home" });
     return {
       message: "All tokens reached home! You won the game!",
-      data: { session: finished, gameCompleted: true, winner: finished.winner },
+      data: {
+        session: finished,
+        gameCompleted: true,
+        winner: finished.winner,
+        gamePhase: "game_over",
+        turnNumber: session.turnNumber,
+        actionSequence: session.actionSequence,
+        actionId,
+        move: { tokenId: Number(tokenId), ...move, getsExtraTurn: false },
+      },
     };
   }
 
   if (getsExtraTurn) {
     session.turnStatus = "WAITING_FOR_ROLL";
+    session.gamePhase = "waiting_for_roll";
     session.lastDiceValue = null;
     session.turnDeadline = newDeadline();
   } else {
@@ -445,12 +543,17 @@ const moveToken = async (userId, sessionId, tokenId) => {
       : "Move successful! Turn passed to next player.",
     data: {
       session,
+      gamePhase: session.gamePhase,
+      turnNumber: session.turnNumber,
+      actionSequence: session.actionSequence,
+      actionId,
       move: {
         tokenId: Number(tokenId),
         prevStep: move.prevStep,
         newStep: move.newStep,
         pointsEarned: move.pointsEarned,
         captured: move.captured,
+        reachedHome: move.reachedHome,
         getsExtraTurn,
       },
     },
@@ -478,6 +581,7 @@ const applyTurnTimeout = async (session) => {
     timestamp: new Date(),
   });
 
+  session.actionSequence = (session.actionSequence || 0) + 1;
   const activeCount = session.players.filter((p) => !p.hasSurrendered).length;
   if (activeCount > 1) {
     session.consecutiveSixes = 0;
@@ -486,6 +590,8 @@ const applyTurnTimeout = async (session) => {
     return { gameCompleted: false, session };
   }
 
+  session.turnStatus = "TURN_COMPLETED";
+  session.gamePhase = "game_over";
   await session.save(); // persist the surrender flags first
   const finished = await settleSession(session._id, {
     forcedWinnerId: activeCount === 1 ? session.players.find((p) => !p.hasSurrendered).user : null,
@@ -522,9 +628,12 @@ const surrenderMatch = async (userId, sessionId) => {
   session.history.push({ player: userId, action: "SURRENDER", timestamp: new Date() });
 
   const wasTheirTurn = String(session.currentTurnPlayer) === String(userId);
+  session.actionSequence = (session.actionSequence || 0) + 1;
   const activeCount = session.players.filter((p) => !p.hasSurrendered).length;
 
   if (activeCount <= 1) {
+    session.turnStatus = "TURN_COMPLETED";
+    session.gamePhase = "game_over";
     await session.save();
     const finished = await settleSession(session._id, {
       forcedWinnerId: activeCount === 1 ? session.players.find((p) => !p.hasSurrendered).user : null,

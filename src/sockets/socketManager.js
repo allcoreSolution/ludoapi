@@ -90,8 +90,19 @@ const formatSessionState = (session) => {
     ? Math.max(0, new Date(session.turnDeadline).getTime() - Date.now())
     : 15000;
 
+  const phase =
+    session.gamePhase ||
+    (session.status === "completed"
+      ? "game_over"
+      : session.turnStatus === "WAITING_FOR_MOVE"
+      ? "waiting_for_move"
+      : "waiting_for_roll");
+
   let movableTokenIds = [];
-  if (session.turnStatus === "WAITING_FOR_MOVE" && session.lastDiceValue) {
+  if (
+    (phase === "waiting_for_move" || session.turnStatus === "WAITING_FOR_MOVE") &&
+    session.lastDiceValue
+  ) {
     const curPlayer = (session.players || []).find(
       (p) => String(p.user?._id || p.user) === String(session.currentTurnPlayer)
     );
@@ -102,20 +113,38 @@ const formatSessionState = (session) => {
     }
   }
 
+  const roomCode = session.roomCode || "";
+  const roomId = session.room ? String(session.room?._id || session.room) : roomCode;
+  const matchId = String(session._id);
+
   return {
-    sessionId: String(session._id),
-    roomCode: session.roomCode,
-    gameMode: session.gameMode,
+    roomId,
+    roomCode,
+    matchId,
+    sessionId: matchId,
+    gameId: matchId,
+    gameMode: session.gameMode || "twoPlayer",
     status: session.status,
-    stateVersion: session.__v || 0,
+    gameStatus: session.status,
+    gamePhase: phase,
+    phase,
+    turnNumber: session.turnNumber || 1,
+    stateVersion: session.actionSequence || session.__v || 0,
+    actionSequence: session.actionSequence || session.__v || 0,
+    lastActionId: session.lastActionId || null,
+    currentPlayerId: String(session.currentTurnPlayer),
     turn: {
       userId: String(session.currentTurnPlayer),
       seatIndex: session.currentTurnSeat,
       status: session.turnStatus,
+      phase,
+      gamePhase: phase,
       diceValue: session.lastDiceValue,
+      diceRolled: Boolean(session.lastDiceValue),
       consecutiveSixes: session.consecutiveSixes || 0,
       remainingMs,
       movableTokenIds,
+      legalMoves: movableTokenIds,
     },
     players: (session.players || []).map((p) => ({
       userId: String(p.user?._id || p.user),
@@ -148,6 +177,10 @@ const viewerView = (state, userId) => {
   if (!mine) return state;
   const live = state.status === "in_progress";
   const isMyTurn = live && state.turn.userId === uid && !mine.hasSurrendered;
+  const canRoll = isMyTurn && (state.gamePhase === "waiting_for_roll" || state.turn.status === "WAITING_FOR_ROLL");
+  const canMove = isMyTurn && (state.gamePhase === "waiting_for_move" || state.turn.status === "WAITING_FOR_MOVE");
+  const legalMoves = canMove ? (state.turn.legalMoves || state.turn.movableTokenIds || []) : [];
+
   return {
     ...state,
     me: {
@@ -155,11 +188,37 @@ const viewerView = (state, userId) => {
       seatIndex: mine.seatIndex,
       color: mine.color,
       isMyTurn,
-      canRoll: isMyTurn && state.turn.status === "WAITING_FOR_ROLL",
-      canMove: isMyTurn && state.turn.status === "WAITING_FOR_MOVE",
-      movableTokenIds: isMyTurn && state.turn.status === "WAITING_FOR_MOVE" ? state.turn.movableTokenIds : [],
+      canRoll,
+      canMove,
+      movableTokenIds: legalMoves,
+      legalMoves,
     },
   };
+};
+
+// ------------------------------------------------------------------
+// In-Memory Per-Session Action Lock (prevents parallel actions / race conditions)
+// ------------------------------------------------------------------
+const sessionLocks = new Map();
+
+const withSessionLock = async (sessionId, fn) => {
+  if (!sessionId) return fn();
+  const key = String(sessionId);
+  const prev = sessionLocks.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  sessionLocks.set(key, prev.then(() => current, () => current));
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    release();
+    if (sessionLocks.get(key) === current) {
+      sessionLocks.delete(key);
+    }
+  }
 };
 
 // ------------------------------------------------------------------
@@ -169,11 +228,18 @@ const broadcastTurnChanged = (session, extra = {}) => {
   if (!io || !session) return false;
   const st = formatSessionState(session);
   io.to(gameRooms(session)).emit("turn_changed", {
+    roomId: session.roomCode,
+    roomCode: session.roomCode,
     gameId: String(session._id),
     sessionId: String(session._id),
+    matchId: String(session._id),
     currentPlayerId: String(session.currentTurnPlayer),
     currentTurnSeat: session.currentTurnSeat,
-    phase: session.turnStatus === "WAITING_FOR_MOVE" ? "waitingForMove" : "waitingForRoll",
+    turnNumber: session.turnNumber || 1,
+    stateVersion: session.actionSequence || session.__v || 0,
+    actionSequence: session.actionSequence || session.__v || 0,
+    phase: session.gamePhase || (session.turnStatus === "WAITING_FOR_MOVE" ? "waiting_for_move" : "waiting_for_roll"),
+    gamePhase: session.gamePhase || (session.turnStatus === "WAITING_FOR_MOVE" ? "waiting_for_move" : "waiting_for_roll"),
     turn: st.turn,
     state: st,
     gameState: st,
@@ -185,16 +251,26 @@ const broadcastTurnChanged = (session, extra = {}) => {
 const broadcastGameState = (session) => {
   if (!io || !session) return false;
   const st = formatSessionState(session);
-  io.to(gameRooms(session)).emit("game_state", { state: st, gameState: st });
+  io.to(gameRooms(session)).emit("game_state", {
+    roomId: session.roomCode,
+    roomCode: session.roomCode,
+    sessionId: String(session._id),
+    matchId: String(session._id),
+    state: st,
+    gameState: st,
+  });
   return true;
 };
 
 const broadcastMatchFinished = (session) => {
   if (!io || !session) return false;
   const st = formatSessionState(session);
-  io.to(gameRooms(session)).emit("match_finished", {
+  const payload = {
+    roomId: session.roomCode,
+    roomCode: session.roomCode,
     gameId: String(session._id),
     sessionId: String(session._id),
+    matchId: String(session._id),
     winnerId: session.winner ? String(session.winner?._id || session.winner) : null,
     reason: session.settlement?.reason || null,
     ranking: (session.players || []).map((p) => ({
@@ -204,9 +280,14 @@ const broadcastMatchFinished = (session) => {
       score: p.score || 0,
       prizeEarned: p.prizeEarned || 0,
     })),
+    gamePhase: "game_over",
+    turnNumber: session.turnNumber || 1,
+    stateVersion: session.actionSequence || session.__v || 0,
     state: st,
     gameState: st,
-  });
+  };
+  io.to(gameRooms(session)).emit("game_over", payload);
+  io.to(gameRooms(session)).emit("match_finished", payload);
   return true;
 };
 
@@ -422,16 +503,26 @@ const init = (httpServer) => {
         const { session } = await gameService.startGame(socket.user._id, roomCode);
         const st = formatSessionState(session);
         const payload = {
+          roomId: roomCode,
           roomCode,
           gameId: String(session._id),
           sessionId: String(session._id),
+          matchId: String(session._id),
+          turnNumber: session.turnNumber || 1,
+          stateVersion: session.actionSequence || session.__v || 0,
+          actionSequence: session.actionSequence || session.__v || 0,
+          gamePhase: session.gamePhase || "waiting_for_roll",
+          phase: session.gamePhase || "waiting_for_roll",
           session: st,
           state: st,
           gameState: st,
         };
         io.to(`room:${roomCode}`).emit("match_started", payload);
+        io.to(`room:${roomCode}`).emit("game_started", payload);
         io.to(`session:${session._id}`).emit("match_started", payload);
+        io.to(`session:${session._id}`).emit("game_started", payload);
         io.to(`game:${session._id}`).emit("match_started", payload);
+        io.to(`game:${session._id}`).emit("game_started", payload);
         if (typeof ack === "function") ack({ ok: true, data: payload });
       } catch (err) {
         logger.error("socket_start_match_error", { err: err.message, userId });
@@ -448,76 +539,106 @@ const init = (httpServer) => {
 
     // 5. Server Authoritative Dice Roll
     const handleRollDice = async (data, ack) => {
-      try {
-        const sid = data?.sessionId || data?.gameId;
-        if (!sid) {
-          if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId or gameId is required" });
-          return;
-        }
+      const sid = data?.sessionId || data?.gameId;
+      if (!sid) {
+        if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "sessionId or gameId is required" });
+        return;
+      }
 
-        const session = await gameService.findSessionByGameId(sid);
-        if (!session) {
-          if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
-          return;
-        }
+      await withSessionLock(sid, async () => {
+        try {
+          const session = await gameService.findSessionByGameId(sid);
+          if (!session) {
+            if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
+            return;
+          }
 
-        const { message, data: rollData } = await gameService.rollDice(socket.user._id, session._id);
-        const updatedSession = await GameSession.findById(session._id);
-        const st = formatSessionState(updatedSession);
-        const payload = {
-          gameId: String(session._id),
-          sessionId: String(session._id),
-          playerId: String(socket.user._id),
-          diceValue: rollData.diceValue,
-          diceResult: rollData.diceValue,
-          turnId: String(updatedSession.__v || 0),
-          phase: rollData.turnPassed ? "waitingForRoll" : "waitingForMove",
-          movableTokenIds: rollData.movableTokenIds || [],
-          turnPassed: Boolean(rollData.turnPassed),
-          threeSixes: Boolean(rollData.consecutiveSixes >= 3),
-          turn: st.turn,
-          state: st,
-          gameState: st,
-        };
+          const actionId = data?.actionId || null;
+          const { message, data: rollData } = await gameService.rollDice(socket.user._id, session._id, { actionId });
+          const updatedSession = await GameSession.findById(session._id);
+          const st = formatSessionState(updatedSession);
+          const rooms = gameRooms(session, data?.gameId);
 
-        // Broadcast to BOTH players in real time
-        const rooms = gameRooms(session, data?.gameId);
-        io.to(rooms).emit("dice_roll_result", payload);
-        io.to(rooms).emit("dice_rolled", payload);
-
-        // If turn was passed (no movable tokens or three 6s), emit turn_changed
-        if (rollData.turnPassed) {
-          const turnPayload = {
+          const payload = {
+            roomId: session.roomCode,
+            roomCode: session.roomCode,
             gameId: String(session._id),
             sessionId: String(session._id),
-            currentPlayerId: String(updatedSession.currentTurnPlayer),
-            currentTurnSeat: updatedSession.currentTurnSeat,
-            phase: "waitingForRoll",
+            matchId: String(session._id),
+            playerId: String(socket.user._id),
+            actionId,
+            turnNumber: updatedSession.turnNumber || 1,
+            stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+            actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+            diceValue: rollData.diceValue,
+            diceResult: rollData.diceValue,
+            turnId: String(updatedSession.__v || 0),
+            legalMoves: rollData.legalMoves || rollData.movableTokenIds || [],
+            movableTokenIds: rollData.movableTokenIds || [],
+            turnPassed: Boolean(rollData.turnPassed),
+            threeSixes: Boolean(rollData.threeSixes),
+            gamePhase: updatedSession.gamePhase,
+            phase: updatedSession.gamePhase,
             turn: st.turn,
             state: st,
             gameState: st,
           };
-          io.to(gameRooms(session)).emit("turn_changed", turnPayload);
-        }
 
-        // Also emit updated game_state
-        io.to(`session:${session._id}`).emit("game_state", { state: st, gameState: st });
+          // Broadcast to BOTH players in real time
+          io.to(rooms).emit("dice_roll_result", payload);
+          io.to(rooms).emit("dice_rolled", payload);
 
-        if (typeof ack === "function") ack({ ok: true, data: { ...rollData, state: st, gameState: st } });
-      } catch (err) {
-        logger.warn("socket_roll_dice_error", { err: err.message, userId });
-        socket.emit("game_error", {
-          code: err.statusCode === 403 ? "OUT_OF_TURN" : "DICE_ROLL_FAILED",
-          message: err.message,
-        });
-        if (typeof ack === "function") {
-          ack({
-            ok: false,
-            code: err.statusCode === 403 ? "FORBIDDEN" : (err.statusCode === 404 ? "NOT_FOUND" : "BAD_REQUEST"),
+          // If turn was passed (no movable tokens or three 6s), emit turn_changed
+          if (rollData.turnPassed) {
+            const turnPayload = {
+              roomId: session.roomCode,
+              roomCode: session.roomCode,
+              gameId: String(session._id),
+              sessionId: String(session._id),
+              matchId: String(session._id),
+              currentPlayerId: String(updatedSession.currentTurnPlayer),
+              currentTurnSeat: updatedSession.currentTurnSeat,
+              turnNumber: updatedSession.turnNumber || 1,
+              stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+              actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+              actionId,
+              getsExtraTurn: false,
+              gamePhase: updatedSession.gamePhase,
+              phase: updatedSession.gamePhase,
+              turn: st.turn,
+              state: st,
+              gameState: st,
+            };
+            io.to(rooms).emit("turn_changed", turnPayload);
+          }
+
+          // Also emit updated game_state to all room channels
+          io.to(rooms).emit("game_state", { state: st, gameState: st });
+
+          if (typeof ack === "function") ack({ ok: true, data: { ...rollData, state: st, gameState: st } });
+        } catch (err) {
+          logger.warn("socket_roll_dice_error", { err: err.message, userId });
+          const code = err.code || (err.statusCode === 403 ? "OUT_OF_TURN" : "DICE_ROLL_FAILED");
+          socket.emit("invalid_move", {
+            sessionId: String(sid),
+            playerId: userId,
+            actionId: data?.actionId || null,
+            code,
             message: err.message,
           });
+          socket.emit("game_error", {
+            code,
+            message: err.message,
+          });
+          if (typeof ack === "function") {
+            ack({
+              ok: false,
+              code: err.code || (err.statusCode === 403 ? "FORBIDDEN" : (err.statusCode === 404 ? "NOT_FOUND" : "BAD_REQUEST")),
+              message: err.message,
+            });
+          }
         }
-      }
+      });
     };
 
     socket.on("dice_roll_requested", handleRollDice);
@@ -525,83 +646,122 @@ const init = (httpServer) => {
 
     // 6. Real-Time Token Movement
     const handleMoveToken = async (data, ack) => {
-      try {
-        const sid = data?.sessionId || data?.gameId;
-        const tokenId = data?.tokenId;
-        if (!sid || tokenId === undefined) {
-          if (typeof ack === "function") {
-            ack({ ok: false, code: "BAD_REQUEST", message: "sessionId/gameId and tokenId are required" });
+      const sid = data?.sessionId || data?.gameId;
+      const tokenId = data?.tokenId;
+      if (!sid || tokenId === undefined) {
+        if (typeof ack === "function") {
+          ack({ ok: false, code: "BAD_REQUEST", message: "sessionId/gameId and tokenId are required" });
+        }
+        return;
+      }
+
+      await withSessionLock(sid, async () => {
+        try {
+          const session = await gameService.findSessionByGameId(sid);
+          if (!session) {
+            if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
+            return;
           }
-          return;
-        }
 
-        const session = await gameService.findSessionByGameId(sid);
-        if (!session) {
-          if (typeof ack === "function") ack({ ok: false, code: "NOT_FOUND", message: "Game session not found" });
-          return;
-        }
+          const actionId = data?.actionId || null;
+          const { message, data: moveData } = await gameService.moveToken(socket.user._id, session._id, tokenId, { actionId });
+          const updatedSession = await GameSession.findById(session._id);
+          const st = formatSessionState(updatedSession);
+          const rooms = gameRooms(session, data?.gameId);
 
-        const { message, data: moveData } = await gameService.moveToken(socket.user._id, session._id, tokenId);
-        const updatedSession = await GameSession.findById(session._id);
-        const st = formatSessionState(updatedSession);
-        const payload = {
-          gameId: String(session._id),
-          sessionId: String(session._id),
-          playerId: String(socket.user._id),
-          tokenId: Number(tokenId),
-          move: moveData.move || { tokenId: Number(tokenId) },
-          turn: st.turn,
-          state: st,
-          gameState: st,
-        };
-
-        // Broadcast token move to BOTH devices
-        io.to(gameRooms(session, data?.gameId)).emit("token_moved", payload);
-
-        // Broadcast turn changed
-        const turnPayload = {
-          gameId: String(session._id),
-          sessionId: String(session._id),
-          currentPlayerId: String(updatedSession.currentTurnPlayer),
-          currentTurnSeat: updatedSession.currentTurnSeat,
-          getsExtraTurn: Boolean(moveData.move?.getsExtraTurn),
-          phase: "waitingForRoll",
-          turn: st.turn,
-          state: st,
-          gameState: st,
-        };
-        io.to(gameRooms(session)).emit("turn_changed", turnPayload);
-
-        // Also emit updated game_state
-        io.to(`session:${session._id}`).emit("game_state", { state: st, gameState: st });
-
-        if (moveData.gameCompleted) {
-          const finishedPayload = {
+          const payload = {
+            roomId: session.roomCode,
+            roomCode: session.roomCode,
             gameId: String(session._id),
             sessionId: String(session._id),
-            winnerId: moveData.winner ? String(moveData.winner) : (updatedSession.winner ? String(updatedSession.winner) : null),
-            ranking: updatedSession.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
+            matchId: String(session._id),
+            playerId: String(socket.user._id),
+            actionId,
+            turnNumber: updatedSession.turnNumber || 1,
+            stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+            actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+            tokenId: Number(tokenId),
+            move: moveData.move || { tokenId: Number(tokenId) },
+            gamePhase: updatedSession.gamePhase,
+            phase: updatedSession.gamePhase,
+            turn: st.turn,
             state: st,
             gameState: st,
           };
-          io.to(gameRooms(session)).emit("match_finished", finishedPayload);
-        }
 
-        if (typeof ack === "function") ack({ ok: true, data: { ...moveData, state: st, gameState: st } });
-      } catch (err) {
-        logger.warn("socket_move_token_error", { err: err.message, userId });
-        socket.emit("game_error", {
-          code: "INVALID_MOVE",
-          message: err.message,
-        });
-        if (typeof ack === "function") {
-          ack({
-            ok: false,
-            code: err.statusCode === 403 ? "FORBIDDEN" : (err.statusCode === 404 ? "NOT_FOUND" : "BAD_REQUEST"),
+          // Broadcast token move to BOTH devices
+          io.to(rooms).emit("token_moved", payload);
+
+          // Broadcast turn changed (unless game completed)
+          if (!moveData.gameCompleted) {
+            const turnPayload = {
+              roomId: session.roomCode,
+              roomCode: session.roomCode,
+              gameId: String(session._id),
+              sessionId: String(session._id),
+              matchId: String(session._id),
+              currentPlayerId: String(updatedSession.currentTurnPlayer),
+              currentTurnSeat: updatedSession.currentTurnSeat,
+              turnNumber: updatedSession.turnNumber || 1,
+              stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+              actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+              actionId,
+              getsExtraTurn: Boolean(moveData.move?.getsExtraTurn),
+              gamePhase: updatedSession.gamePhase,
+              phase: updatedSession.gamePhase,
+              turn: st.turn,
+              state: st,
+              gameState: st,
+            };
+            io.to(rooms).emit("turn_changed", turnPayload);
+          }
+
+          // Also emit updated game_state to all room channels
+          io.to(rooms).emit("game_state", { state: st, gameState: st });
+
+          if (moveData.gameCompleted) {
+            const finishedPayload = {
+              roomId: session.roomCode,
+              roomCode: session.roomCode,
+              gameId: String(session._id),
+              sessionId: String(session._id),
+              matchId: String(session._id),
+              winnerId: moveData.winner ? String(moveData.winner) : (updatedSession.winner ? String(updatedSession.winner) : null),
+              ranking: updatedSession.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
+              gamePhase: "game_over",
+              turnNumber: updatedSession.turnNumber || 1,
+              stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+              state: st,
+              gameState: st,
+            };
+            io.to(rooms).emit("game_over", finishedPayload);
+            io.to(rooms).emit("match_finished", finishedPayload);
+          }
+
+          if (typeof ack === "function") ack({ ok: true, data: { ...moveData, state: st, gameState: st } });
+        } catch (err) {
+          logger.warn("socket_move_token_error", { err: err.message, userId });
+          const code = err.code || "INVALID_MOVE";
+          socket.emit("invalid_move", {
+            sessionId: String(sid),
+            playerId: userId,
+            actionId: data?.actionId || null,
+            code,
             message: err.message,
           });
+          socket.emit("game_error", {
+            code,
+            message: err.message,
+          });
+          if (typeof ack === "function") {
+            ack({
+              ok: false,
+              code: err.code || (err.statusCode === 403 ? "FORBIDDEN" : (err.statusCode === 404 ? "NOT_FOUND" : "BAD_REQUEST")),
+              message: err.message,
+            });
+          }
         }
-      }
+      });
     };
 
     socket.on("token_move_requested", handleMoveToken);
@@ -617,8 +777,9 @@ const init = (httpServer) => {
           return;
         }
         const st = formatSessionState(session);
-        socket.emit("game_state", { state: st, gameState: st });
-        if (typeof ack === "function") ack({ ok: true, data: { state: st, gameState: st } });
+        const mine = viewerView(st, userId);
+        socket.emit("game_state", { state: mine, gameState: mine });
+        if (typeof ack === "function") ack({ ok: true, data: { state: mine, gameState: mine } });
       } catch (err) {
         if (typeof ack === "function") ack({ ok: false, message: err.message });
       }

@@ -43,21 +43,35 @@ const getGameSession = asyncHandler(async (req, res) => {
 
 // 3. Roll dice
 const rollDice = asyncHandler(async (req, res) => {
-  const { message, data } = await gameService.rollDice(req.user._id, req.params.sessionId);
+  const actionId = req.body?.actionId || null;
+  const { message, data } = await gameService.rollDice(req.user._id, req.params.sessionId, { actionId });
 
   try {
     const updatedSession = await GameSession.findById(req.params.sessionId);
     if (updatedSession) {
       const st = socketManager.formatSessionState(updatedSession);
       const payload = {
+        roomId: updatedSession.roomCode,
+        roomCode: updatedSession.roomCode,
+        gameId: String(req.params.sessionId),
         sessionId: String(req.params.sessionId),
+        matchId: String(req.params.sessionId),
         playerId: String(req.user._id),
+        actionId,
+        turnNumber: updatedSession.turnNumber || 1,
+        stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+        actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
         diceValue: data.diceValue,
+        diceResult: data.diceValue,
+        legalMoves: data.legalMoves || data.movableTokenIds || [],
         movableTokenIds: data.movableTokenIds || [],
         turnPassed: Boolean(data.turnPassed),
         threeSixes: Boolean(data.consecutiveSixes >= 3),
+        gamePhase: updatedSession.gamePhase,
+        phase: updatedSession.gamePhase,
         turn: st.turn,
         state: st,
+        gameState: st,
       };
       socketManager.emitToSession(req.params.sessionId, "dice_roll_result", payload);
       socketManager.emitToSession(req.params.sessionId, "dice_rolled", payload);
@@ -69,10 +83,12 @@ const rollDice = asyncHandler(async (req, res) => {
 
 // 4. Move token
 const moveToken = asyncHandler(async (req, res) => {
+  const actionId = req.body?.actionId || null;
   const { message, data } = await gameService.moveToken(
     req.user._id,
     req.params.sessionId,
-    req.body.tokenId
+    req.body.tokenId,
+    { actionId }
   );
 
   try {
@@ -80,25 +96,47 @@ const moveToken = asyncHandler(async (req, res) => {
     if (updatedSession) {
       const st = socketManager.formatSessionState(updatedSession);
       const payload = {
+        roomId: updatedSession.roomCode,
+        roomCode: updatedSession.roomCode,
+        gameId: String(req.params.sessionId),
         sessionId: String(req.params.sessionId),
+        matchId: String(req.params.sessionId),
         playerId: String(req.user._id),
+        actionId,
+        turnNumber: updatedSession.turnNumber || 1,
+        stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+        actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+        tokenId: Number(req.body.tokenId),
         move: data.move || { tokenId: Number(req.body.tokenId) },
+        gamePhase: updatedSession.gamePhase,
+        phase: updatedSession.gamePhase,
         turn: st.turn,
         state: st,
+        gameState: st,
       };
       socketManager.emitToSession(req.params.sessionId, "token_moved", payload);
 
       if (data.gameCompleted) {
-        socketManager.emitToSession(req.params.sessionId, "match_finished", {
+        const finishedPayload = {
+          roomId: updatedSession.roomCode,
+          roomCode: updatedSession.roomCode,
+          gameId: String(req.params.sessionId),
           sessionId: String(req.params.sessionId),
+          matchId: String(req.params.sessionId),
           winnerId: data.winner
             ? String(data.winner)
             : updatedSession.winner
             ? String(updatedSession.winner)
             : null,
           ranking: updatedSession.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
+          gamePhase: "game_over",
+          turnNumber: updatedSession.turnNumber || 1,
+          stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
           state: st,
-        });
+          gameState: st,
+        };
+        socketManager.emitToSession(req.params.sessionId, "game_over", finishedPayload);
+        socketManager.emitToSession(req.params.sessionId, "match_finished", finishedPayload);
       }
     }
   } catch (_) {}

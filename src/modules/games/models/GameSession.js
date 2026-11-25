@@ -189,6 +189,31 @@ const gameSessionSchema = new mongoose.Schema(
       enum: ["WAITING_FOR_ROLL", "WAITING_FOR_MOVE", "TURN_COMPLETED"],
       default: "WAITING_FOR_ROLL",
     },
+    gamePhase: {
+      type: String,
+      enum: [
+        "waiting_for_roll",
+        "rolling_dice",
+        "waiting_for_move",
+        "moving_token",
+        "turn_transition",
+        "game_over",
+      ],
+      default: "waiting_for_roll",
+    },
+    turnNumber: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    lastActionId: {
+      type: String,
+      default: null,
+    },
+    actionSequence: {
+      type: Number,
+      default: 0,
+    },
     lastDiceValue: {
       type: Number,
       min: 1,
