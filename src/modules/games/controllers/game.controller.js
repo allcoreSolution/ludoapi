@@ -64,8 +64,6 @@ const startGameSession = asyncHandler(async (req, res) => {
       gameState: myGameState,
     },
   });
-    },
-  });
 });
 
 // 2. Live state / reconnect (participants only)
