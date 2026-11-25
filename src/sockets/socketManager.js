@@ -11,6 +11,68 @@ const engine = require("../modules/games/engine/ludoEngine");
 
 let io = null;
 
+// ------------------------------------------------------------------
+// Presence: userId -> Set(socketId). A user can have several sockets (two tabs / reconnect
+// overlap); they count as "online" while at least one is connected.
+// ------------------------------------------------------------------
+const presence = new Map();
+
+/** @returns {boolean} true when this was the user's first live socket */
+const addPresence = (userId, socketId) => {
+  const key = String(userId);
+  let set = presence.get(key);
+  if (!set) {
+    set = new Set();
+    presence.set(key, set);
+  }
+  set.add(socketId);
+  return set.size === 1;
+};
+
+/** @returns {boolean} true when that was the user's last live socket */
+const removePresence = (userId, socketId) => {
+  const key = String(userId);
+  const set = presence.get(key);
+  if (!set) return false;
+  set.delete(socketId);
+  if (set.size === 0) {
+    presence.delete(key);
+    return true;
+  }
+  return false;
+};
+
+const isUserOnline = (userId) => (presence.get(String(userId))?.size || 0) > 0;
+
+/**
+ * Every channel a client may have joined for one match. Emitting to this ARRAY in a single
+ * call delivers each event once per socket (emitting to session: and game: separately made a
+ * socket that joined both receive the event twice -> dice animation played twice).
+ */
+const gameRooms = (session, extraId) => {
+  const sid = String(session._id);
+  const rooms = new Set([`session:${sid}`, `game:${sid}`]);
+  if (session.room) rooms.add(`game:${String(session.room)}`); // createMatch returns roomId as gameId
+  if (extraId) rooms.add(`game:${String(extraId)}`);
+  return [...rooms];
+};
+
+const joinSocketToSession = (socket, session) => {
+  socket.join(gameRooms(session));
+  if (session.roomCode) socket.join(`room:${String(session.roomCode).toUpperCase()}`);
+};
+
+/** Server-side join: both players receive game events even if the app forgets to join_session. */
+const joinUsersToSession = (userIds, session) => {
+  if (!io || !session) return false;
+  const rooms = gameRooms(session);
+  if (session.roomCode) rooms.push(`room:${String(session.roomCode).toUpperCase()}`);
+  for (const uid of userIds) {
+    io.in(`user:${String(uid)}`).socketsJoin(rooms);
+  }
+  return true;
+};
+
 const extractToken = (socket) => {
   const authHeader =
     socket.handshake.auth?.token ||
@@ -63,7 +125,7 @@ const formatSessionState = (session) => {
       color: p.color,
       score: p.score || 0,
       hasSurrendered: Boolean(p.hasSurrendered),
-      online: true,
+      online: isUserOnline(p.user?._id || p.user),
       tokens: (p.tokens || []).map((t) => ({
         tokenId: t.tokenId,
         step: t.step,
@@ -73,6 +135,134 @@ const formatSessionState = (session) => {
     })),
     winnerId: session.winner ? String(session.winner?._id || session.winner) : null,
   };
+};
+
+/**
+ * Adds a per-player "me" block to a formatSessionState() result so the app knows what THIS
+ * player may do right now (roll button enabled? which tokens are tappable?). Pure function.
+ */
+const viewerView = (state, userId) => {
+  if (!state) return state;
+  const uid = String(userId);
+  const mine = (state.players || []).find((p) => p.userId === uid);
+  if (!mine) return state;
+  const live = state.status === "in_progress";
+  const isMyTurn = live && state.turn.userId === uid && !mine.hasSurrendered;
+  return {
+    ...state,
+    me: {
+      userId: uid,
+      seatIndex: mine.seatIndex,
+      color: mine.color,
+      isMyTurn,
+      canRoll: isMyTurn && state.turn.status === "WAITING_FOR_ROLL",
+      canMove: isMyTurn && state.turn.status === "WAITING_FOR_MOVE",
+      movableTokenIds: isMyTurn && state.turn.status === "WAITING_FOR_MOVE" ? state.turn.movableTokenIds : [],
+    },
+  };
+};
+
+// ------------------------------------------------------------------
+// Broadcast helpers (shared by sockets, REST controllers and the sweeper)
+// ------------------------------------------------------------------
+const broadcastTurnChanged = (session, extra = {}) => {
+  if (!io || !session) return false;
+  const st = formatSessionState(session);
+  io.to(gameRooms(session)).emit("turn_changed", {
+    gameId: String(session._id),
+    sessionId: String(session._id),
+    currentPlayerId: String(session.currentTurnPlayer),
+    currentTurnSeat: session.currentTurnSeat,
+    phase: session.turnStatus === "WAITING_FOR_MOVE" ? "waitingForMove" : "waitingForRoll",
+    turn: st.turn,
+    state: st,
+    gameState: st,
+    ...extra,
+  });
+  return true;
+};
+
+const broadcastGameState = (session) => {
+  if (!io || !session) return false;
+  const st = formatSessionState(session);
+  io.to(gameRooms(session)).emit("game_state", { state: st, gameState: st });
+  return true;
+};
+
+const broadcastMatchFinished = (session) => {
+  if (!io || !session) return false;
+  const st = formatSessionState(session);
+  io.to(gameRooms(session)).emit("match_finished", {
+    gameId: String(session._id),
+    sessionId: String(session._id),
+    winnerId: session.winner ? String(session.winner?._id || session.winner) : null,
+    reason: session.settlement?.reason || null,
+    ranking: (session.players || []).map((p) => ({
+      userId: String(p.user?._id || p.user),
+      rank: p.rank || null,
+      outcome: p.outcome || null,
+      score: p.score || 0,
+      prizeEarned: p.prizeEarned || 0,
+    })),
+    state: st,
+    gameState: st,
+  });
+  return true;
+};
+
+/**
+ * One call for "a turn timed out" (client-triggered OR sweeper-triggered):
+ * tells the table who missed, then either ends the match or announces the next turn.
+ */
+const broadcastTimeoutResult = (session, gameCompleted = false) => {
+  if (!io || !session) return false;
+  const last = (session.history || [])[(session.history || []).length - 1];
+  const timedOutUserId = last && last.action === "TIMEOUT" && last.player ? String(last.player) : null;
+  const st = formatSessionState(session);
+
+  if (timedOutUserId) {
+    const missed = (session.players || []).find((p) => String(p.user?._id || p.user) === timedOutUserId);
+    io.to(gameRooms(session)).emit("turn_timeout", {
+      gameId: String(session._id),
+      sessionId: String(session._id),
+      userId: timedOutUserId,
+      missedTurns: missed ? missed.missedTurns : undefined,
+      state: st,
+    });
+  }
+  if (gameCompleted) broadcastMatchFinished(session);
+  else {
+    broadcastTurnChanged(session, { reason: "timeout" });
+    broadcastGameState(session);
+  }
+  return true;
+};
+
+/** On (re)connect: put the socket back into its live match(es) and hand over the state. */
+const resumeActiveSessions = async (socket, userId, announce) => {
+  const sessions = await GameSession.find({ status: "in_progress", "players.user": userId }).limit(5);
+  for (const s of sessions) {
+    joinSocketToSession(socket, s);
+    const st = formatSessionState(s);
+    if (announce) {
+      socket.to(`session:${s._id}`).emit("player_reconnected", {
+        gameId: String(s._id),
+        sessionId: String(s._id),
+        userId,
+        playerId: userId,
+        state: st,
+        gameState: st,
+      });
+    }
+    const mine = viewerView(st, userId);
+    socket.emit("active_game", {
+      gameId: String(s._id),
+      sessionId: String(s._id),
+      roomCode: s.roomCode,
+      state: mine,
+      gameState: mine,
+    });
+  }
 };
 
 const init = (httpServer) => {
@@ -132,6 +322,10 @@ const init = (httpServer) => {
     const userId = String(socket.user._id);
     const userRoom = `user:${userId}`;
     socket.join(userRoom);
+    const firstSocket = addPresence(userId, socket.id);
+    resumeActiveSessions(socket, userId, firstSocket).catch((err) =>
+      logger.warn("socket_resume_failed", { err: err.message, userId })
+    );
 
     logger.info("socket_connected", {
       socketId: socket.id,
@@ -287,12 +481,9 @@ const init = (httpServer) => {
         };
 
         // Broadcast to BOTH players in real time
-        io.to(`session:${session._id}`).emit("dice_roll_result", payload);
-        io.to(`session:${session._id}`).emit("dice_rolled", payload);
-        io.to(`game:${session._id}`).emit("dice_roll_result", payload);
-        if (data?.gameId && String(data.gameId) !== String(session._id)) {
-          io.to(`game:${data.gameId}`).emit("dice_roll_result", payload);
-        }
+        const rooms = gameRooms(session, data?.gameId);
+        io.to(rooms).emit("dice_roll_result", payload);
+        io.to(rooms).emit("dice_rolled", payload);
 
         // If turn was passed (no movable tokens or three 6s), emit turn_changed
         if (rollData.turnPassed) {
@@ -306,8 +497,7 @@ const init = (httpServer) => {
             state: st,
             gameState: st,
           };
-          io.to(`session:${session._id}`).emit("turn_changed", turnPayload);
-          io.to(`game:${session._id}`).emit("turn_changed", turnPayload);
+          io.to(gameRooms(session)).emit("turn_changed", turnPayload);
         }
 
         // Also emit updated game_state
@@ -366,11 +556,7 @@ const init = (httpServer) => {
         };
 
         // Broadcast token move to BOTH devices
-        io.to(`session:${session._id}`).emit("token_moved", payload);
-        io.to(`game:${session._id}`).emit("token_moved", payload);
-        if (data?.gameId && String(data.gameId) !== String(session._id)) {
-          io.to(`game:${data.gameId}`).emit("token_moved", payload);
-        }
+        io.to(gameRooms(session, data?.gameId)).emit("token_moved", payload);
 
         // Broadcast turn changed
         const turnPayload = {
@@ -384,8 +570,7 @@ const init = (httpServer) => {
           state: st,
           gameState: st,
         };
-        io.to(`session:${session._id}`).emit("turn_changed", turnPayload);
-        io.to(`game:${session._id}`).emit("turn_changed", turnPayload);
+        io.to(gameRooms(session)).emit("turn_changed", turnPayload);
 
         // Also emit updated game_state
         io.to(`session:${session._id}`).emit("game_state", { state: st, gameState: st });
@@ -399,8 +584,7 @@ const init = (httpServer) => {
             state: st,
             gameState: st,
           };
-          io.to(`session:${session._id}`).emit("match_finished", finishedPayload);
-          io.to(`game:${session._id}`).emit("match_finished", finishedPayload);
+          io.to(gameRooms(session)).emit("match_finished", finishedPayload);
         }
 
         if (typeof ack === "function") ack({ ok: true, data: { ...moveData, state: st, gameState: st } });
@@ -472,20 +656,8 @@ const init = (httpServer) => {
           return;
         }
         const { gameCompleted, session } = await gameService.handleTurnTimeout(socket.user._id, sessionId);
+        broadcastTimeoutResult(session, gameCompleted);
         const st = formatSessionState(session);
-        io.to(`session:${sessionId}`).emit("turn_timeout", {
-          sessionId: String(sessionId),
-          userId,
-          state: st,
-        });
-        if (gameCompleted) {
-          io.to(`session:${sessionId}`).emit("match_finished", {
-            sessionId: String(sessionId),
-            winnerId: session.winner ? String(session.winner) : null,
-            ranking: session.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
-            state: st,
-          });
-        }
         if (typeof ack === "function") ack({ ok: true, data: { session: st } });
       } catch (err) {
         if (typeof ack === "function") ack({ ok: false, message: err.message });
@@ -523,6 +695,8 @@ const init = (httpServer) => {
 
     // Handle disconnecting to broadcast to all session rooms before leaving
     socket.on("disconnecting", () => {
+      // Another live socket of the same user (reconnect overlap) => they are still online.
+      if (!removePresence(userId, socket.id)) return;
       for (const room of socket.rooms) {
         if (room.startsWith("session:")) {
           const sid = room.replace("session:", "");
@@ -607,5 +781,13 @@ module.exports = {
   emitToRoom,
   emitToGame,
   formatSessionState,
+  viewerView,
+  isUserOnline,
+  gameRooms,
+  joinUsersToSession,
+  broadcastTurnChanged,
+  broadcastGameState,
+  broadcastMatchFinished,
+  broadcastTimeoutResult,
   close,
 };

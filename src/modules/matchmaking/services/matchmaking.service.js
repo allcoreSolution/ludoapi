@@ -11,6 +11,8 @@ const GameRoom = require("../../rooms/models/GameRoom");
 const User = require("../../auth/models/User");
 const walletService = require("../../wallet/services/wallet.service");
 const socketManager = require("../../../sockets/socketManager");
+const GameSession = require("../../games/models/GameSession");
+const gameService = require("../../games/services/game.service");
 
 const ACTIVE_ROOM_STATUSES = ["waiting", "starting", "playing"];
 
@@ -215,38 +217,59 @@ const joinQueue = async (user, body = {}) => {
         isEntryFeeDeducted: entryFee > 0,
       });
 
-      // Emit real-time Socket.IO events to both players
-      socketManager.emitToUser(opponentEntry.user, "match_found", {
-        status: "matched",
-        roomId: room._id,
-        roomCode: room.roomCode,
-        gameMode,
-        entryFee,
-        prizePool: room.prizePool,
-        opponent: {
-          id: userId,
-          name: user.name,
-          avatar: user.avatar || "",
-          seatIndex: 1,
-          color: "Green",
-        },
-      });
+      // Start the match right now: nobody has to send start_match, and two phones racing to
+      // start the same room can no longer happen. If it fails the old flow still works
+      // (clients can call start_match / POST /api/games/start themselves).
+      let session = null;
+      try {
+        ({ session } = await gameService.startGame(opponentEntry.user, room.roomCode));
+      } catch (err) {
+        logger.error("matchmaking_autostart_failed", { roomCode: room.roomCode, err });
+      }
+      if (session) {
+        // Server-side join: both apps receive dice/move events even before they call join_session.
+        socketManager.joinUsersToSession([opponentEntry.user, userId], session);
+      }
+      const baseState = session ? socketManager.formatSessionState(session) : null;
+      const gameId = session ? String(session._id) : null;
 
-      socketManager.emitToUser(userId, "match_found", {
-        status: "matched",
-        roomId: room._id,
-        roomCode: room.roomCode,
-        gameMode,
-        entryFee,
-        prizePool: room.prizePool,
-        opponent: {
-          id: opponentUser._id,
-          name: opponentUser.name,
-          avatar: opponentUser.avatar || "",
-          seatIndex: 0,
-          color: "Red",
-        },
-      });
+      const foundPayload = (viewerId, opponent, me) => {
+        const st = baseState ? socketManager.viewerView(baseState, viewerId) : null;
+        return {
+          status: "matched",
+          roomId: room._id,
+          roomCode: room.roomCode,
+          gameId,
+          sessionId: gameId,
+          autoStarted: Boolean(session),
+          gameMode,
+          entryFee,
+          prizePool: room.prizePool,
+          opponent,
+          you: me,
+          state: st,
+          gameState: st,
+        };
+      };
+
+      const opponentView = { id: userId, name: user.name, avatar: user.avatar || "", seatIndex: 1, color: "Green" };
+      const hostView = {
+        id: opponentUser._id,
+        name: opponentUser.name,
+        avatar: opponentUser.avatar || "",
+        seatIndex: 0,
+        color: "Red",
+      };
+
+      // Emit real-time Socket.IO events to both players (each gets their own "me" block)
+      const toHost = foundPayload(opponentEntry.user, opponentView, { seatIndex: 0, color: "Red" });
+      const toGuest = foundPayload(userId, hostView, { seatIndex: 1, color: "Green" });
+      socketManager.emitToUser(opponentEntry.user, "match_found", toHost);
+      socketManager.emitToUser(userId, "match_found", toGuest);
+      if (session) {
+        socketManager.emitToUser(opponentEntry.user, "match_started", toHost);
+        socketManager.emitToUser(userId, "match_started", toGuest);
+      }
 
       return {
         matched: true,
@@ -254,16 +277,15 @@ const joinQueue = async (user, body = {}) => {
         queueId: currentQueue._id,
         roomId: room._id,
         roomCode: room.roomCode,
+        gameId,
+        sessionId: gameId,
+        autoStarted: Boolean(session),
         gameMode,
         entryFee,
         prizePool: room.prizePool,
-        opponent: {
-          id: opponentUser._id,
-          name: opponentUser.name,
-          avatar: opponentUser.avatar || "",
-          seatIndex: 0,
-          color: "Red",
-        },
+        opponent: hostView,
+        you: { seatIndex: 1, color: "Green" },
+        state: toGuest.state,
         userCoins: balance,
       };
     }
@@ -346,10 +368,23 @@ const getQueueStatus = async (userId) => {
     };
   }
 
-  // status === "matched"
+  // status === "matched" - only while that match is still alive (old matches must not keep
+  // reporting "matched" forever and block the app from showing the home screen)
+  const matchedRoom = latestQueue.matchedRoom
+    ? await GameRoom.findById(latestQueue.matchedRoom).select("status").lean()
+    : null;
+  if (!matchedRoom || !ACTIVE_ROOM_STATUSES.includes(matchedRoom.status)) {
+    return { status: "idle" };
+  }
+  const liveSession = await GameSession.findOne({ room: latestQueue.matchedRoom, status: "in_progress" })
+    .select("_id")
+    .lean();
+
   return {
     status: "matched",
     queueId: latestQueue._id,
+    gameId: liveSession ? String(liveSession._id) : null,
+    sessionId: liveSession ? String(liveSession._id) : null,
     roomId: latestQueue.matchedRoom,
     roomCode: latestQueue.matchedRoomCode,
     gameMode: latestQueue.gameMode,

@@ -760,8 +760,76 @@ const getAuthoritativeGameState = async (userId, gameId) => {
     remainingTimeSeconds: remainingSeconds(populated),
     winner: populated.winner,
     updatedAt: populated.updatedAt,
-    state: formatted,
+    state: socketManager.viewerView(formatted, userId),
   };
+};
+
+/**
+ * "Where am I?" for the app: call it right after login / app start.
+ * Returns exactly one of: in_game | in_room | in_queue | idle - so the app can resume the
+ * live match (or lobby / queue screen) instead of dropping the player on the home screen.
+ */
+const getActiveGame = async (userId) => {
+  const MatchmakingQueue = require("../../matchmaking/models/MatchmakingQueue");
+
+  let session = await GameSession.findOne({ status: "in_progress", "players.user": userId }).sort({ startedAt: -1 });
+  if (session && (await settleIfTimeUp(session))) session = null; // clock ran out while away
+
+  if (session) {
+    const game = await getAuthoritativeGameState(userId, session._id);
+    return {
+      status: "in_game",
+      gameId: game.gameId,
+      sessionId: game.sessionId,
+      roomCode: game.roomCode,
+      me: game.state?.me || null,
+      game,
+    };
+  }
+
+  const room = await GameRoom.findOne({ "players.user": userId, status: { $in: ["waiting", "starting"] } });
+  if (room) {
+    return {
+      status: "in_room",
+      roomId: room._id,
+      roomCode: room.roomCode,
+      isHost: String(room.host) === String(userId),
+      maxPlayers: room.maxPlayers,
+      entryFee: room.entryFee,
+      gameMode: room.gameMode,
+      players: room.players,
+    };
+  }
+
+  const queue = await MatchmakingQueue.findOne({ user: userId, status: "waiting", expiresAt: { $gt: new Date() } });
+  if (queue) {
+    return {
+      status: "in_queue",
+      queueId: queue._id,
+      entryFee: queue.entryFee,
+      gameMode: queue.gameMode,
+      expiresAt: queue.expiresAt,
+    };
+  }
+
+  return { status: "idle" };
+};
+
+/**
+ * One call for "Play Online": resumes whatever the player is already doing, otherwise enters
+ * matchmaking. When an opponent is found the match is already started (see matchmaking.service).
+ */
+const playOnline = async (user, body = {}) => {
+  const active = await getActiveGame(user._id);
+  if (active.status !== "idle") return { resumed: true, ...active };
+  const matchmakingService = require("../../matchmaking/services/matchmaking.service");
+  const result = await matchmakingService.joinQueue(user, body);
+  return { resumed: false, ...result };
+};
+
+const cancelOnline = async (userId) => {
+  const matchmakingService = require("../../matchmaking/services/matchmaking.service");
+  return matchmakingService.cancelQueue(userId);
 };
 
 const reconnectMatch = async (userId, gameId) => {
@@ -790,6 +858,9 @@ module.exports = {
   joinMatch,
   findSessionByGameId,
   getAuthoritativeGameState,
+  getActiveGame,
+  playOnline,
+  cancelOnline,
   reconnectMatch,
   // used by the sweeper
   settleSession,

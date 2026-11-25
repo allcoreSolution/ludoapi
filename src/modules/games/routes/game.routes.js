@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const { protect } = require("../../../../middleware/auth.middleware");
-const { gameActionLimiter } = require("../../../../middleware/rateLimit.middleware");
+const { gameActionLimiter, matchmakingLimiter } = require("../../../../middleware/rateLimit.middleware");
 
 const {
   startGameSession,
@@ -16,6 +16,9 @@ const {
   createMatch,
   joinMatch,
   getGameState,
+  getActiveGame,
+  playOnline,
+  cancelOnline,
   reconnectMatch,
 } = require("../controllers/game.controller");
 
@@ -29,6 +32,24 @@ const {
   joinMatchValidation,
   gameIdParamValidation,
 } = require("../validations/game.validation");
+const { joinQueueValidation } = require("../../matchmaking/validations/matchmaking.validation");
+
+// ==========================================
+// Online Play (login -> play): resume + one-call matchmaking
+// (declared before "/:gameId" so "active" / "online" are not read as a game id)
+// ==========================================
+router.get("/active", protect, getActiveGame);
+
+router.post(
+  "/online/play",
+  protect,
+  matchmakingLimiter,
+  joinQueueValidation,
+  validateRequest,
+  playOnline
+);
+
+router.delete("/online/play", protect, matchmakingLimiter, cancelOnline);
 
 // ==========================================
 // Online Match: Create Match

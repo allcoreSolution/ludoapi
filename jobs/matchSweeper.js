@@ -19,6 +19,16 @@ const GameSession = require("../src/modules/games/models/GameSession");
 const gameService = require("../src/modules/games/services/game.service");
 const roomService = require("../src/modules/rooms/services/room.service");
 const matchmakingService = require("../src/modules/matchmaking/services/matchmaking.service");
+const socketManager = require("../src/sockets/socketManager");
+
+// Sockets may be unavailable (tests / sweeper-only worker): never let a broadcast break a tick.
+const safeBroadcast = (fn) => {
+  try {
+    fn();
+  } catch (error) {
+    logger.warn("sweeper_broadcast_failed", { err: error.message });
+  }
+};
 
 const BATCH = 100;
 let lastRoomCleanup = 0;
@@ -40,8 +50,10 @@ const sweepOnce = async () => {
 
   for (const { _id } of expired) {
     try {
-      await gameService.settleSession(_id, { reason: "time_up" });
+      const finished = await gameService.settleSession(_id, { reason: "time_up" });
       stats.matchesClosed += 1;
+      // players who are still looking at the board must be told the match is over
+      safeBroadcast(() => socketManager.broadcastMatchFinished(finished));
     } catch (error) {
       logger.error("sweeper_close_match_failed", { sessionId: String(_id), err: error });
     }
@@ -55,8 +67,10 @@ const sweepOnce = async () => {
 
   for (const session of overdue) {
     try {
-      await gameService.applyTurnTimeout(session);
+      const result = await gameService.applyTurnTimeout(session);
       stats.turnsTimedOut += 1;
+      // tell both phones: who missed the turn, whose turn it is now (or that the match ended)
+      safeBroadcast(() => socketManager.broadcastTimeoutResult(result.session, result.gameCompleted));
     } catch (error) {
       // VersionError = a player acted at the last moment; that is fine.
       if (error.name !== "VersionError") {

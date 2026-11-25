@@ -114,23 +114,8 @@ const handleTurnTimeout = asyncHandler(async (req, res) => {
   );
 
   try {
-    if (session) {
-      const st = socketManager.formatSessionState(session);
-      socketManager.emitToSession(req.params.sessionId, "turn_timeout", {
-        sessionId: String(req.params.sessionId),
-        userId: String(req.user._id),
-        state: st,
-      });
-
-      if (gameCompleted) {
-        socketManager.emitToSession(req.params.sessionId, "match_finished", {
-          sessionId: String(req.params.sessionId),
-          winnerId: session.winner ? String(session.winner) : null,
-          ranking: session.players.map((p) => ({ userId: String(p.user), rank: p.rank })),
-          state: st,
-        });
-      }
-    }
+    // tells the table who missed, then match_finished OR turn_changed + game_state
+    socketManager.broadcastTimeoutResult(session, gameCompleted);
   } catch (_) {}
 
   return res.status(200).json({
@@ -242,6 +227,33 @@ const getGameState = asyncHandler(async (req, res) => {
   });
 });
 
+// Resume: GET /api/games/active  (call after login / app start)
+const getActiveGame = asyncHandler(async (req, res) => {
+  const data = await gameService.getActiveGame(req.user._id);
+  return res.status(200).json({ success: true, data });
+});
+
+// One-call "Play Online": POST /api/games/online/play
+const playOnline = asyncHandler(async (req, res) => {
+  const data = await gameService.playOnline(req.user, req.body);
+  const status = data.resumed || data.matched ? 200 : 201;
+  return res.status(status).json({
+    success: true,
+    message: data.resumed
+      ? "You already have an online game in progress"
+      : data.matched
+      ? "Match found! Game started."
+      : "Searching for an opponent...",
+    data,
+  });
+});
+
+// DELETE /api/games/online/play  (stop searching, entry fee refunded)
+const cancelOnline = asyncHandler(async (req, res) => {
+  const data = await gameService.cancelOnline(req.user._id);
+  return res.status(200).json({ success: true, message: "Matchmaking cancelled", data });
+});
+
 // Online Match API: Reconnect Match (POST /api/games/:gameId/reconnect)
 const reconnectMatch = asyncHandler(async (req, res) => {
   const state = await gameService.reconnectMatch(req.user._id, req.params.gameId);
@@ -264,5 +276,8 @@ module.exports = {
   createMatch,
   joinMatch,
   getGameState,
+  getActiveGame,
+  playOnline,
+  cancelOnline,
   reconnectMatch,
 };
