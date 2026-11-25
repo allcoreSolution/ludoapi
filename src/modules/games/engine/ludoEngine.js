@@ -43,7 +43,15 @@ const getGlobalBoardIndex = (seatIndex, step) => {
 };
 
 const getMovableTokenIds = (tokens, diceValue) =>
-  tokens.filter((t) => !t.isHome && t.step + diceValue <= HOME_STEP).map((t) => t.tokenId);
+  tokens
+    .filter((t) => {
+      if (t.isHome) return false;
+      if (t.step === -1 || t.step < 0) {
+        return diceValue === 6;
+      }
+      return t.step + diceValue <= HOME_STEP;
+    })
+    .map((t) => t.tokenId);
 
 /**
  * Next player in seat order who has not surrendered.
@@ -72,15 +80,22 @@ const applyMove = ({ players, userId, tokenId, diceValue }) => {
   if (!Number.isInteger(diceValue) || diceValue < 1 || diceValue > 6) {
     throw new RuleViolation("No valid dice value to move with");
   }
-  if (token.step + diceValue > HOME_STEP) {
-    throw new RuleViolation("Move exceeds home boundary (needs exact number to reach home)");
-  }
-
   const prevStep = token.step;
-  const newStep = prevStep + diceValue;
+  let newStep;
+  if (prevStep < 0) {
+    if (diceValue !== 6) {
+      throw new RuleViolation("Need a 6 to open token from base");
+    }
+    newStep = 0; // opens onto starting tile
+  } else {
+    if (prevStep + diceValue > HOME_STEP) {
+      throw new RuleViolation("Move exceeds home boundary (needs exact number to reach home)");
+    }
+    newStep = prevStep + diceValue;
+  }
   token.step = newStep;
 
-  let pointsEarned = diceValue;
+  let pointsEarned = prevStep < 0 ? 1 : diceValue;
   if (newStep === HOME_STEP) {
     token.isHome = true;
     pointsEarned += HOME_STEP;
@@ -97,8 +112,9 @@ const applyMove = ({ players, userId, tokenId, diceValue }) => {
         for (const oppToken of opponent.tokens) {
           if (oppToken.step > 0 && oppToken.step <= LAST_SHARED_STEP) {
             if (getGlobalBoardIndex(opponent.seatIndex, oppToken.step) === myTile) {
-              const pointsLost = oppToken.step;
-              oppToken.step = 0;
+              const pointsLost = Math.max(0, oppToken.step);
+              const hasBaseTokens = players.some((p) => p.tokens.some((t) => t.step === -1));
+              oppToken.step = hasBaseTokens ? -1 : 0;
               opponent.score = Math.max(0, opponent.score - pointsLost);
               captured = {
                 opponentUser: opponent.user,

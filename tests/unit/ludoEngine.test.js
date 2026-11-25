@@ -164,3 +164,37 @@ test("settlement: platform fee and rounding never create coins", () => {
   assert.equal(paid, 99); // 33 * 3, the leftover coin stays with the platform
   assert.ok(paid <= 100);
 });
+
+test("classic ludo: base tokens (step -1) require 6 to open and reject non-6", () => {
+  const baseTokens = [0, 1, 2, 3].map((tokenId) => ({ tokenId, step: -1, isHome: false }));
+  
+  // Non-6 (1..5) cannot move any base token
+  for (let dice = 1; dice <= 5; dice++) {
+    const movable = E.getMovableTokenIds(baseTokens, dice);
+    assert.deepEqual(movable, [], `Roll ${dice} should not allow any token to leave base`);
+  }
+
+  // 6 allows all base tokens to be opened
+  const movableOn6 = E.getMovableTokenIds(baseTokens, 6);
+  assert.deepEqual(movableOn6, [0, 1, 2, 3]);
+
+  // Attempting to move with non-6 throws RuleViolation
+  const players = [
+    { user: "p1", seatIndex: 0, score: 0, tokens: baseTokens },
+    { user: "p2", seatIndex: 1, score: 0, tokens: [0, 1, 2, 3].map((tokenId) => ({ tokenId, step: -1, isHome: false })) },
+  ];
+  assert.throws(() => {
+    E.applyMove({ players, userId: "p1", tokenId: 0, diceValue: 5 });
+  }, /Need a 6 to open/);
+
+  // Moving with 6 opens token onto tile 0
+  const result = E.applyMove({ players, userId: "p1", tokenId: 0, diceValue: 6 });
+  assert.equal(result.prevStep, -1);
+  assert.equal(result.newStep, 0);
+  assert.equal(players[0].tokens[0].step, 0);
+  assert.equal(players[0].tokens[0].isHome, false);
+
+  // Subsequent non-6 roll can move the opened token, but not the in-base tokens
+  const movableOn3 = E.getMovableTokenIds(players[0].tokens, 3);
+  assert.deepEqual(movableOn3, [0]); // Only token 0 can move!
+});

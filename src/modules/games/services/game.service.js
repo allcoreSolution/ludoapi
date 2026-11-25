@@ -260,7 +260,7 @@ const startGame = async (userId, roomCode) => {
         seatIndex: p.seatIndex,
         color: p.color,
         score: 0,
-        tokens: [0, 1, 2, 3].map((tokenId) => ({ tokenId, step: 0, isHome: false })),
+        tokens: [0, 1, 2, 3].map((tokenId) => ({ tokenId, step: -1, isHome: false })),
         missedTurns: 0,
         hasSurrendered: false,
       })),

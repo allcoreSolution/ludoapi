@@ -9,11 +9,11 @@ const tokenSchema = new mongoose.Schema(
       min: 0,
       max: 3,
     },
-    // Step on player's track: 0 = Starting tile, 1..55 = Path, 56 = Home
+    // Step on player's track: -1 = Base, 0 = Starting tile, 1..55 = Path, 56 = Home
     step: {
       type: Number,
-      default: 0,
-      min: 0,
+      default: -1,
+      min: -1,
       max: 56,
     },
     isHome: {
@@ -59,10 +59,10 @@ const gamePlayerSchema = new mongoose.Schema(
     tokens: {
       type: [tokenSchema],
       default: [
-        { tokenId: 0, step: 0, isHome: false },
-        { tokenId: 1, step: 0, isHome: false },
-        { tokenId: 2, step: 0, isHome: false },
-        { tokenId: 3, step: 0, isHome: false },
+        { tokenId: 0, step: -1, isHome: false },
+        { tokenId: 1, step: -1, isHome: false },
+        { tokenId: 2, step: -1, isHome: false },
+        { tokenId: 3, step: -1, isHome: false },
       ],
     },
     missedTurns: {
