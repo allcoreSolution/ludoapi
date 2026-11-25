@@ -13,57 +13,57 @@ const startGameSession = asyncHandler(async (req, res) => {
   const roomCode = req.body.roomCode.trim().toUpperCase();
   const { session, created } = await gameService.startGame(req.user._id, roomCode);
 
-  try {
-    if (session) {
-      socketManager.joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
-      const st = socketManager.formatSessionState(session);
-      const payload = {
-        roomId: roomCode,
-        roomCode,
-        gameId: String(session._id),
-        sessionId: String(session._id),
-        matchId: String(session._id),
-        turnNumber: session.turnNumber || 1,
-        stateVersion: session.actionSequence || session.__v || 0,
-        actionSequence: session.actionSequence || session.__v || 0,
-        gamePhase: session.gamePhase || "waiting_for_roll",
-        phase: session.gamePhase || "waiting_for_roll",
-        currentPlayerId: String(session.currentTurnPlayer),
-        currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
-        players: st.players,
-        tokens: st.tokens,
-        session: st,
-        state: st,
-        gameState: st,
-      };
-      for (const p of session.players || []) {
-        const uid = String(p.user?._id || p.user);
-        const pView = socketManager.viewerView(st, uid);
-        socketManager.emitToUser(uid, "match_started", {
-          ...payload,
-          session: pView,
-          state: pView,
-          gameState: pView,
-          me: pView.me,
-          seatIndex: p.seatIndex,
-          color: p.color,
-        });
-      }
-      socketManager.emitToGame(session, "match_started", payload);
-      socketManager.emitToGame(session, "game_started", payload);
-      socketManager.emitToGame(session, "game_state", { state: st, gameState: st });
-    }
-  } catch (_) {}
+  let st = null;
+  let playerInfo = null;
+  let myGameState = null;
+
+  if (session) {
+    socketManager.joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
+    st = socketManager.formatSessionState(session);
+    const p = (session.players || []).find((item) => String(item.user?._id || item.user) === String(req.user._id));
+    playerInfo = {
+      userId: String(req.user._id),
+      playerId: String(req.user._id),
+      seatIndex: p ? p.seatIndex : 0,
+      seat: p ? p.seatIndex : 0,
+      color: (p?.color || (p?.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+      isHost: Boolean(p?.seatIndex === 0),
+    };
+    myGameState = socketManager.viewerView(st, req.user._id);
+
+    try {
+      socketManager.broadcastGameStartedToPlayers(session, roomCode);
+    } catch (_) {}
+  }
 
   const me = (session.players || []).find((p) => String(p.user?._id || p.user) === String(req.user._id));
   return res.status(created ? 201 : 200).json({
     success: true,
     message: created ? "Game session started successfully" : "Game session already in progress",
+    roomId: roomCode,
+    roomCode,
+    matchId: session ? String(session._id) : null,
+    sessionId: session ? String(session._id) : null,
+    gameId: session ? String(session._id) : null,
+    player: playerInfo,
+    me: playerInfo,
+    players: st ? st.players : [],
+    gameState: myGameState,
     data: {
       session,
       sessionId: String(session._id),
-      seatIndex: me ? me.seatIndex : 0,
-      assignedColor: me ? me.color : "Red",
+      seatIndex: me ? me.seatIndex : (playerInfo ? playerInfo.seatIndex : 0),
+      assignedColor: me ? me.color : (playerInfo ? playerInfo.color : "RED"),
+      roomId: roomCode,
+      roomCode,
+      matchId: session ? String(session._id) : null,
+      gameId: session ? String(session._id) : null,
+      player: playerInfo,
+      me: playerInfo,
+      players: st ? st.players : [],
+      gameState: myGameState,
+    },
+  });
     },
   });
 });
@@ -74,7 +74,44 @@ const getGameSession = asyncHandler(async (req, res) => {
     req.user._id,
     req.params.sessionId
   );
-  return res.status(200).json({ success: true, data: { session, remainingTimeSeconds } });
+
+  const st = socketManager.formatSessionState(session);
+  const p = (session.players || []).find((item) => String(item.user?._id || item.user) === String(req.user._id));
+  const playerInfo = {
+    userId: String(req.user._id),
+    playerId: String(req.user._id),
+    seatIndex: p ? p.seatIndex : 0,
+    seat: p ? p.seatIndex : 0,
+    color: (p?.color || (p?.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+    isHost: Boolean(p?.seatIndex === 0),
+  };
+  const myGameState = socketManager.viewerView(st, req.user._id);
+
+  return res.status(200).json({
+    success: true,
+    roomId: session.roomCode,
+    roomCode: session.roomCode,
+    matchId: String(session._id),
+    sessionId: String(session._id),
+    gameId: String(session._id),
+    player: playerInfo,
+    me: playerInfo,
+    players: st.players,
+    gameState: myGameState,
+    data: {
+      session,
+      remainingTimeSeconds,
+      roomId: session.roomCode,
+      roomCode: session.roomCode,
+      matchId: String(session._id),
+      sessionId: String(session._id),
+      gameId: String(session._id),
+      player: playerInfo,
+      me: playerInfo,
+      players: st.players,
+      gameState: myGameState,
+    },
+  });
 });
 
 // 3. Roll dice

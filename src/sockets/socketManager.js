@@ -233,7 +233,7 @@ const viewerView = (state, userId) => {
       playerId: uid,
       seat: mine.seatIndex !== undefined ? mine.seatIndex : mine.seat,
       seatIndex: mine.seatIndex !== undefined ? mine.seatIndex : mine.seat,
-      color: mine.color,
+      color: (mine.color || (mine.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
       isMyTurn,
       canRoll,
       canMove,
@@ -338,6 +338,89 @@ const broadcastMatchFinished = (session) => {
   return true;
 };
 
+const broadcastGameStartedToPlayers = (session, roomCode) => {
+  if (!io || !session) return false;
+  const st = formatSessionState(session);
+  const rCode = roomCode || session.roomCode;
+  const matchId = String(session._id);
+  const rooms = gameRooms(session);
+
+  // 1. Dispatch tailored player identity to each authenticated player's private channel
+  for (const p of session.players || []) {
+    const uid = String(p.user?._id || p.user);
+    const isHost = Boolean(p.isHost !== undefined ? p.isHost : p.seatIndex === 0);
+    const me = {
+      userId: uid,
+      playerId: uid,
+      seatIndex: p.seatIndex,
+      seat: p.seatIndex,
+      color: (p.color || (p.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+      isHost,
+    };
+    const myState = viewerView(st, uid);
+    const playerPayload = {
+      success: true,
+      matchId,
+      sessionId: matchId,
+      gameId: matchId,
+      roomId: rCode,
+      roomCode: rCode,
+      me,
+      player: me,
+      you: me,
+      players: st.players,
+      state: myState,
+      gameState: myState,
+      turnNumber: session.turnNumber || 1,
+      stateVersion: session.actionSequence || session.__v || 0,
+      actionSequence: session.actionSequence || session.__v || 0,
+      gamePhase: session.gamePhase || "waiting_for_roll",
+      phase: session.gamePhase || "waiting_for_roll",
+      currentPlayerId: String(session.currentTurnPlayer),
+      currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+    };
+
+    io.to(`user:${uid}`).emit("game_started", playerPayload);
+    io.to(`user:${uid}`).emit("match_started", playerPayload);
+    io.to(`user:${uid}`).emit("game_state", playerPayload);
+
+    logger.info("game_started_player_dispatched", {
+      matchId,
+      roomId: rCode,
+      userId: uid,
+      assignedSeat: me.seatIndex,
+      playerColor: me.color,
+      isHost: me.isHost,
+      currentTurnPlayer: String(session.currentTurnPlayer),
+    });
+  }
+
+  // 2. Also emit shared room payload to table rooms
+  const sharedPayload = {
+    roomId: rCode,
+    roomCode: rCode,
+    gameId: matchId,
+    sessionId: matchId,
+    matchId: matchId,
+    turnNumber: session.turnNumber || 1,
+    stateVersion: session.actionSequence || session.__v || 0,
+    actionSequence: session.actionSequence || session.__v || 0,
+    gamePhase: session.gamePhase || "waiting_for_roll",
+    phase: session.gamePhase || "waiting_for_roll",
+    currentPlayerId: String(session.currentTurnPlayer),
+    currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+    players: st.players,
+    tokens: st.tokens,
+    session: st,
+    state: st,
+    gameState: st,
+  };
+  io.to(rooms).emit("match_started", sharedPayload);
+  io.to(rooms).emit("game_started", sharedPayload);
+  io.to(rooms).emit("game_state", { state: st, gameState: st });
+  return true;
+};
+
 /**
  * One call for "a turn timed out" (client-triggered OR sweeper-triggered):
  * tells the table who missed, then either ends the match or announces the next turn.
@@ -376,6 +459,9 @@ const resumeActiveSessions = async (socket, userId, announce) => {
       socket.to(`session:${s._id}`).emit("player_reconnected", {
         gameId: String(s._id),
         sessionId: String(s._id),
+        matchId: String(s._id),
+        roomId: s.roomCode,
+        roomCode: s.roomCode,
         userId,
         playerId: userId,
         state: st,
@@ -383,10 +469,36 @@ const resumeActiveSessions = async (socket, userId, announce) => {
       });
     }
     const mine = viewerView(st, userId);
+    const playerObj = (s.players || []).find((p) => String(p.user?._id || p.user) === String(userId));
+    const me = playerObj ? {
+      userId: String(userId),
+      playerId: String(userId),
+      seatIndex: playerObj.seatIndex,
+      seat: playerObj.seatIndex,
+      color: (playerObj.color || (playerObj.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+      isHost: Boolean(playerObj.isHost !== undefined ? playerObj.isHost : playerObj.seatIndex === 0),
+    } : null;
+
+    logger.info("player_reconnected_session", {
+      matchId: String(s._id),
+      roomId: s.roomCode,
+      userId: String(userId),
+      socketId: socket.id,
+      assignedSeat: me ? me.seatIndex : null,
+      playerColor: me ? me.color : null,
+      isHost: me ? me.isHost : null,
+      currentTurnPlayer: String(s.currentTurnPlayer),
+    });
+
     socket.emit("active_game", {
       gameId: String(s._id),
       sessionId: String(s._id),
+      matchId: String(s._id),
       roomCode: s.roomCode,
+      roomId: s.roomCode,
+      me,
+      player: me,
+      players: st.players,
       state: mine,
       gameState: mine,
     });
@@ -534,7 +646,30 @@ const init = (httpServer) => {
         joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
 
         const st = formatSessionState(session);
-        const userState = viewerView(st, userId);
+        const myPlayer = (session.players || []).find((p) => String(p.user?._id || p.user) === userId);
+        const me = myPlayer
+          ? {
+              userId,
+              playerId: userId,
+              seatIndex: myPlayer.seatIndex,
+              seat: myPlayer.seatIndex,
+              color: (myPlayer.color || (myPlayer.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+              isHost: Boolean(myPlayer.isHost !== undefined ? myPlayer.isHost : myPlayer.seatIndex === 0),
+            }
+          : null;
+        const myState = viewerView(st, userId);
+
+        logger.info("player_joined_session", {
+          matchId: String(session._id),
+          roomId: session.roomCode,
+          userId,
+          socketId: socket.id,
+          assignedSeat: me ? me.seatIndex : null,
+          playerColor: me ? me.color : null,
+          isHost: me ? me.isHost : null,
+          currentTurnPlayer: String(session.currentTurnPlayer),
+        });
+
         const joinPayload = {
           roomId: session.roomCode,
           roomCode: session.roomCode,
@@ -544,19 +679,48 @@ const init = (httpServer) => {
           userId,
           playerId: userId,
           name: socket.user.name,
+          me,
+          player: me,
           turnNumber: session.turnNumber || 1,
           stateVersion: session.actionSequence || session.__v || 0,
           actionSequence: session.actionSequence || session.__v || 0,
-          state: userState,
-          gameState: userState,
-          me: userState.me,
+          state: myState,
+          gameState: myState,
         };
 
         const rooms = gameRooms(session, data?.gameId);
         io.to(rooms).emit("player_reconnected", joinPayload);
-        socket.emit("game_state", { state: userState, gameState: userState, me: userState.me });
+        socket.emit("game_state", {
+          matchId: String(session._id),
+          sessionId: String(session._id),
+          gameId: String(session._id),
+          roomId: session.roomCode,
+          roomCode: session.roomCode,
+          me,
+          player: me,
+          players: st.players,
+          state: myState,
+          gameState: myState,
+        });
 
-        if (typeof ack === "function") ack({ ok: true, data: { state: userState, gameState: userState, me: userState.me } });
+        if (typeof ack === "function") {
+          ack({
+            ok: true,
+            data: {
+              matchId: String(session._id),
+              sessionId: String(session._id),
+              roomId: session.roomCode,
+              roomCode: session.roomCode,
+              me,
+              player: me,
+              seatIndex: me?.seatIndex,
+              color: me?.color,
+              players: st.players,
+              state: myState,
+              gameState: myState,
+            },
+          });
+        }
       } catch (err) {
         logger.error("socket_join_session_error", { err: err.message, userId });
         if (typeof ack === "function") ack({ ok: false, code: "INTERNAL_ERROR", message: err.message });
@@ -574,47 +738,37 @@ const init = (httpServer) => {
         joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
         joinSocketToSession(socket, session);
 
+        broadcastGameStartedToPlayers(session, roomCode);
+
         const st = formatSessionState(session);
-        const rooms = gameRooms(session);
-        const payload = {
+        const myPlayer = (session.players || []).find((p) => String(p.user?._id || p.user) === userId);
+        const me = {
+          userId,
+          playerId: userId,
+          seatIndex: myPlayer ? myPlayer.seatIndex : 0,
+          seat: myPlayer ? myPlayer.seatIndex : 0,
+          color: (myPlayer?.color || "RED").toUpperCase(),
+          isHost: Boolean(myPlayer?.seatIndex === 0),
+        };
+        const myState = viewerView(st, userId);
+        const ackPayload = {
+          matchId: String(session._id),
+          sessionId: String(session._id),
+          gameId: String(session._id),
           roomId: roomCode,
           roomCode,
-          gameId: String(session._id),
-          sessionId: String(session._id),
-          matchId: String(session._id),
-          turnNumber: session.turnNumber || 1,
-          stateVersion: session.actionSequence || session.__v || 0,
-          actionSequence: session.actionSequence || session.__v || 0,
-          gamePhase: session.gamePhase || "waiting_for_roll",
-          phase: session.gamePhase || "waiting_for_roll",
-          currentPlayerId: String(session.currentTurnPlayer),
-          currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+          me,
+          player: me,
+          seatIndex: me.seatIndex,
+          color: me.color,
           players: st.players,
           tokens: st.tokens,
           session: st,
-          state: st,
-          gameState: st,
+          state: myState,
+          gameState: myState,
         };
 
-        for (const p of session.players || []) {
-          const uid = String(p.user?._id || p.user);
-          const pView = viewerView(st, uid);
-          emitToUser(uid, "match_started", {
-            ...payload,
-            session: pView,
-            state: pView,
-            gameState: pView,
-            me: pView.me,
-            seatIndex: p.seatIndex,
-            color: p.color,
-          });
-        }
-
-        io.to(rooms).emit("match_started", payload);
-        io.to(rooms).emit("game_started", payload);
-        io.to(rooms).emit("game_state", { state: st, gameState: st });
-        const myView = viewerView(st, socket.user._id);
-        if (typeof ack === "function") ack({ ok: true, data: { ...payload, me: myView.me, seatIndex: myView.me?.seatIndex } });
+        if (typeof ack === "function") ack({ ok: true, data: ackPayload });
       } catch (err) {
         logger.error("socket_start_match_error", { err: err.message, userId });
         socket.emit("game_error", { code: "START_FAILED", message: err.message });
@@ -1140,5 +1294,6 @@ module.exports = {
   broadcastGameState,
   broadcastMatchFinished,
   broadcastTimeoutResult,
+  broadcastGameStartedToPlayers,
   close,
 };

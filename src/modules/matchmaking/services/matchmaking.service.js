@@ -311,23 +311,32 @@ const joinQueue = async (user, body = {}) => {
         };
       };
 
-      const opponentView = { id: userId, name: user.name, avatar: user.avatar || "", seatIndex: 1, color: "Green" };
+      const opponentView = { id: userId, playerId: String(userId), name: user.name, avatar: user.avatar || "", seat: 1, seatIndex: 1, color: "GREEN" };
       const hostView = {
         id: opponentUser._id,
+        playerId: String(opponentUser._id),
         name: opponentUser.name,
         avatar: opponentUser.avatar || "",
+        seat: 0,
         seatIndex: 0,
-        color: "Red",
+        color: "RED",
       };
 
+      const hostPlayerInfo = { userId: String(opponentEntry.user), playerId: String(opponentEntry.user), seat: 0, seatIndex: 0, color: "RED", isHost: true };
+      const guestPlayerInfo = { userId: String(userId), playerId: String(userId), seat: 1, seatIndex: 1, color: "GREEN", isHost: false };
+
       // Emit real-time Socket.IO events to both players (each gets their own "me" block)
-      const toHost = foundPayload(opponentEntry.user, opponentView, { seatIndex: 0, color: "Red" });
-      const toGuest = foundPayload(userId, hostView, { seatIndex: 1, color: "Green" });
+      const toHost = foundPayload(opponentEntry.user, opponentView, hostPlayerInfo);
+      const toGuest = foundPayload(userId, hostView, guestPlayerInfo);
+      toHost.player = hostPlayerInfo;
+      toHost.me = hostPlayerInfo;
+      toGuest.player = guestPlayerInfo;
+      toGuest.me = guestPlayerInfo;
+
       socketManager.emitToUser(opponentEntry.user, "match_found", toHost);
       socketManager.emitToUser(userId, "match_found", toGuest);
       if (session) {
-        socketManager.emitToUser(opponentEntry.user, "match_started", toHost);
-        socketManager.emitToUser(userId, "match_started", toGuest);
+        socketManager.broadcastGameStartedToPlayers(session, room.roomCode);
       }
 
       return {
@@ -338,13 +347,21 @@ const joinQueue = async (user, body = {}) => {
         roomCode: room.roomCode,
         gameId,
         sessionId: gameId,
+        matchId: gameId,
+        player: guestPlayerInfo,
+        me: guestPlayerInfo,
+        players: [
+          { playerId: String(opponentEntry.user), userId: String(opponentEntry.user), name: opponentUser.name, seat: 0, seatIndex: 0, color: "RED", isHost: true },
+          { playerId: String(userId), userId: String(userId), name: user.name, seat: 1, seatIndex: 1, color: "GREEN", isHost: false },
+        ],
         autoStarted: Boolean(session),
         gameMode,
         entryFee,
         prizePool: room.prizePool,
         opponent: hostView,
-        you: { seatIndex: 1, color: "Green" },
+        you: guestPlayerInfo,
         state: toGuest.state,
+        gameState: toGuest.state,
         userCoins: balance,
       };
     }
@@ -430,24 +447,41 @@ const getQueueStatus = async (userId) => {
   // status === "matched" - only while that match is still alive (old matches must not keep
   // reporting "matched" forever and block the app from showing the home screen)
   const matchedRoom = latestQueue.matchedRoom
-    ? await GameRoom.findById(latestQueue.matchedRoom).select("status").lean()
+    ? await GameRoom.findById(latestQueue.matchedRoom).lean()
     : null;
   if (!matchedRoom || !ACTIVE_ROOM_STATUSES.includes(matchedRoom.status)) {
     return { status: "idle" };
   }
-  const liveSession = await GameSession.findOne({ room: latestQueue.matchedRoom, status: "in_progress" })
-    .select("_id")
-    .lean();
+  const liveSession = await GameSession.findOne({ room: latestQueue.matchedRoom, status: "in_progress" });
+  const isHost = matchedRoom ? String(matchedRoom.host) === String(userId) : false;
+  const seatIndex = isHost ? 0 : 1;
+  const color = isHost ? "RED" : "GREEN";
+  const player = {
+    userId: String(userId),
+    playerId: String(userId),
+    seatIndex,
+    seat: seatIndex,
+    color,
+    isHost,
+  };
+  const baseState = liveSession ? socketManager.formatSessionState(liveSession) : null;
+  const myGameState = baseState ? socketManager.viewerView(baseState, userId) : null;
 
   return {
     status: "matched",
     queueId: latestQueue._id,
-    gameId: liveSession ? String(liveSession._id) : null,
-    sessionId: liveSession ? String(liveSession._id) : null,
+    matchId: liveSession ? String(liveSession._id) : (latestQueue.matchedSession ? String(latestQueue.matchedSession) : null),
+    gameId: liveSession ? String(liveSession._id) : (latestQueue.matchedSession ? String(latestQueue.matchedSession) : null),
+    sessionId: liveSession ? String(liveSession._id) : (latestQueue.matchedSession ? String(latestQueue.matchedSession) : null),
     roomId: latestQueue.matchedRoom,
     roomCode: latestQueue.matchedRoomCode,
     gameMode: latestQueue.gameMode,
     entryFee: latestQueue.entryFee,
+    player,
+    me: player,
+    players: baseState ? baseState.players : (matchedRoom?.players || []),
+    gameState: myGameState,
+    state: myGameState,
     opponent: latestQueue.opponent,
     matchedAt: latestQueue.matchedAt,
   };
@@ -791,8 +825,14 @@ const joinNearbyQueue = async (user, body = {}) => {
         color: "Red",
       };
 
-      const toHost = foundPayload(matchedCandidate.user, opponentView, { seat: 0, seatIndex: 0, color: "Red" });
-      const toGuest = foundPayload(userId, hostView, { seat: 1, seatIndex: 1, color: "Green" });
+      const hostPlayerInfo = { userId: String(matchedCandidate.user), playerId: String(matchedCandidate.user), seat: 0, seatIndex: 0, color: "RED", isHost: true };
+      const guestPlayerInfo = { userId: String(userId), playerId: String(userId), seat: 1, seatIndex: 1, color: "GREEN", isHost: false };
+      const toHost = foundPayload(matchedCandidate.user, opponentView, hostPlayerInfo);
+      const toGuest = foundPayload(userId, hostView, guestPlayerInfo);
+      toHost.player = hostPlayerInfo;
+      toHost.me = hostPlayerInfo;
+      toGuest.player = guestPlayerInfo;
+      toGuest.me = guestPlayerInfo;
 
       // Emit real-time Socket.IO events to both players
       socketManager.emitToUser(matchedCandidate.user, "nearby_match_found", toHost);
@@ -801,9 +841,7 @@ const joinNearbyQueue = async (user, body = {}) => {
       socketManager.emitToUser(userId, "match_found", toGuest);
 
       if (session) {
-        socketManager.emitToGame(session, "match_started", toHost);
-        socketManager.emitToGame(session, "game_started", toHost);
-        socketManager.emitToGame(session, "game_state", { state: baseState, gameState: baseState });
+        socketManager.broadcastGameStartedToPlayers(session, room.roomCode);
       }
 
       return {
@@ -816,10 +854,13 @@ const joinNearbyQueue = async (user, body = {}) => {
         roomId: room._id,
         roomCode: room.roomCode,
         gameMode,
+        player: guestPlayerInfo,
+        me: guestPlayerInfo,
         players: toGuest.players,
         opponent: hostView,
-        you: { seat: 1, seatIndex: 1, color: "Green" },
+        you: guestPlayerInfo,
         state: toGuest.state,
+        gameState: toGuest.state,
         userCoins: balance,
       };
     }
@@ -913,25 +954,41 @@ const getNearbyQueueStatus = async (userId) => {
 
   // status === "matched"
   const matchedRoom = latestQueue.matchedRoom
-    ? await GameRoom.findById(latestQueue.matchedRoom).select("status").lean()
+    ? await GameRoom.findById(latestQueue.matchedRoom).lean()
     : null;
   if (!matchedRoom || !ACTIVE_ROOM_STATUSES.includes(matchedRoom.status)) {
     return { status: "idle" };
   }
-  const liveSession = await GameSession.findOne({ room: latestQueue.matchedRoom, status: "in_progress" })
-    .select("_id")
-    .lean();
+  const liveSession = await GameSession.findOne({ room: latestQueue.matchedRoom, status: "in_progress" });
+  const isHost = matchedRoom ? String(matchedRoom.host) === String(userId) : false;
+  const seatIndex = isHost ? 0 : 1;
+  const color = isHost ? "RED" : "GREEN";
+  const player = {
+    userId: String(userId),
+    playerId: String(userId),
+    seatIndex,
+    seat: seatIndex,
+    color,
+    isHost,
+  };
+  const baseState = liveSession ? socketManager.formatSessionState(liveSession) : null;
+  const myGameState = baseState ? socketManager.viewerView(baseState, userId) : null;
 
   return {
     status: "matched",
     queueId: latestQueue._id,
-    matchId: liveSession ? String(liveSession._id) : String(latestQueue.matchedRoom),
-    gameId: liveSession ? String(liveSession._id) : String(latestQueue.matchedRoom),
-    sessionId: liveSession ? String(liveSession._id) : String(latestQueue.matchedRoom),
+    matchId: liveSession ? String(liveSession._id) : (latestQueue.matchedSession ? String(latestQueue.matchedSession) : String(latestQueue.matchedRoom)),
+    gameId: liveSession ? String(liveSession._id) : (latestQueue.matchedSession ? String(latestQueue.matchedSession) : String(latestQueue.matchedRoom)),
+    sessionId: liveSession ? String(liveSession._id) : (latestQueue.matchedSession ? String(latestQueue.matchedSession) : String(latestQueue.matchedRoom)),
     roomId: latestQueue.matchedRoom,
     roomCode: latestQueue.matchedRoomCode,
     gameMode: latestQueue.gameMode,
     entryFee: latestQueue.entryFee,
+    player,
+    me: player,
+    players: baseState ? baseState.players : (matchedRoom?.players || []),
+    gameState: myGameState,
+    state: myGameState,
     opponent: latestQueue.opponent,
     matchedAt: latestQueue.matchedAt,
   };

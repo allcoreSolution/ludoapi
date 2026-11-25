@@ -49,7 +49,7 @@ const gamePlayerSchema = new mongoose.Schema(
     color: {
       type: String,
       required: true,
-      enum: ["Red", "Green", "Yellow", "Blue"],
+      enum: ["Red", "Green", "Yellow", "Blue", "RED", "GREEN", "YELLOW", "BLUE"],
     },
     score: {
       type: Number,

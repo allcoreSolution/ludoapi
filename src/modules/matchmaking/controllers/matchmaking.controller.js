@@ -13,6 +13,11 @@ const joinQueue = asyncHandler(async (req, res) => {
     message: result.matched
       ? "Match found! Room initialized."
       : "Added to matchmaking queue. Waiting for an opponent.",
+    roomId: result.roomId || result.roomCode || null,
+    matchId: result.matchId || result.gameId || null,
+    player: result.player || null,
+    players: result.players || [],
+    gameState: result.gameState || result.state || null,
     data: result,
   });
 });
@@ -23,6 +28,11 @@ const getQueueStatus = asyncHandler(async (req, res) => {
 
   return res.status(200).json({
     success: true,
+    roomId: status.roomId || status.roomCode || null,
+    matchId: status.matchId || status.gameId || status.sessionId || null,
+    player: status.player || null,
+    players: status.players || [],
+    gameState: status.gameState || status.state || null,
     data: status,
   });
 });
@@ -50,6 +60,11 @@ const joinNearbyQueue = asyncHandler(async (req, res) => {
     message: result.matched
       ? "Nearby match found! Room initialized."
       : "Searching for nearby opponents...",
+    roomId: result.roomId || result.roomCode || null,
+    matchId: result.matchId || result.gameId || null,
+    player: result.player || null,
+    players: result.players || [],
+    gameState: result.gameState || result.state || null,
     data: result,
   });
 });
@@ -60,6 +75,11 @@ const getNearbyStatus = asyncHandler(async (req, res) => {
 
   return res.status(200).json({
     success: true,
+    roomId: status.roomId || status.roomCode || null,
+    matchId: status.matchId || status.gameId || status.sessionId || null,
+    player: status.player || null,
+    players: status.players || [],
+    gameState: status.gameState || status.state || null,
     data: status,
   });
 });

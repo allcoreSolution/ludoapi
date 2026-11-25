@@ -171,6 +171,14 @@ const createRoom = async (user, body) => {
   }
 
   if (balance === null) balance = await walletService.getBalance(userId);
+  logger.info("room_created", {
+    roomId: String(room._id),
+    roomCode: room.roomCode,
+    userId: String(userId),
+    assignedSeat: 0,
+    playerColor: "RED",
+    isHost: true,
+  });
   return { room, userCoins: balance };
 };
 
@@ -267,6 +275,14 @@ const joinRoom = async (user, roomCodeRaw) => {
 
   const me = updated.players.find((p) => String(p.user) === String(userId));
   if (balance === null) balance = await walletService.getBalance(userId);
+  logger.info("room_player_joined", {
+    roomId: String(updated._id),
+    roomCode: updated.roomCode,
+    userId: String(userId),
+    assignedSeat: me.seatIndex,
+    playerColor: (me.color || "").toUpperCase(),
+    isHost: false,
+  });
   return { room: updated, alreadyInRoom: false, assignedColor: me.color, seatIndex: me.seatIndex, userCoins: balance };
 };
 
