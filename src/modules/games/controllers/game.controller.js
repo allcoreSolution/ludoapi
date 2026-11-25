@@ -36,16 +36,35 @@ const startGameSession = asyncHandler(async (req, res) => {
         state: st,
         gameState: st,
       };
+      for (const p of session.players || []) {
+        const uid = String(p.user?._id || p.user);
+        const pView = socketManager.viewerView(st, uid);
+        socketManager.emitToUser(uid, "match_started", {
+          ...payload,
+          session: pView,
+          state: pView,
+          gameState: pView,
+          me: pView.me,
+          seatIndex: p.seatIndex,
+          color: p.color,
+        });
+      }
       socketManager.emitToGame(session, "match_started", payload);
       socketManager.emitToGame(session, "game_started", payload);
       socketManager.emitToGame(session, "game_state", { state: st, gameState: st });
     }
   } catch (_) {}
 
+  const me = (session.players || []).find((p) => String(p.user?._id || p.user) === String(req.user._id));
   return res.status(created ? 201 : 200).json({
     success: true,
     message: created ? "Game session started successfully" : "Game session already in progress",
-    data: { session },
+    data: {
+      session,
+      sessionId: String(session._id),
+      seatIndex: me ? me.seatIndex : 0,
+      assignedColor: me ? me.color : "Red",
+    },
   });
 });
 

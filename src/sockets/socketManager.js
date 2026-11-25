@@ -534,6 +534,7 @@ const init = (httpServer) => {
         joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
 
         const st = formatSessionState(session);
+        const userState = viewerView(st, userId);
         const joinPayload = {
           roomId: session.roomCode,
           roomCode: session.roomCode,
@@ -546,15 +547,16 @@ const init = (httpServer) => {
           turnNumber: session.turnNumber || 1,
           stateVersion: session.actionSequence || session.__v || 0,
           actionSequence: session.actionSequence || session.__v || 0,
-          state: st,
-          gameState: st,
+          state: userState,
+          gameState: userState,
+          me: userState.me,
         };
 
         const rooms = gameRooms(session, data?.gameId);
         io.to(rooms).emit("player_reconnected", joinPayload);
-        socket.emit("game_state", { state: st, gameState: st });
+        socket.emit("game_state", { state: userState, gameState: userState, me: userState.me });
 
-        if (typeof ack === "function") ack({ ok: true, data: { state: st, gameState: st } });
+        if (typeof ack === "function") ack({ ok: true, data: { state: userState, gameState: userState, me: userState.me } });
       } catch (err) {
         logger.error("socket_join_session_error", { err: err.message, userId });
         if (typeof ack === "function") ack({ ok: false, code: "INTERNAL_ERROR", message: err.message });
@@ -594,10 +596,25 @@ const init = (httpServer) => {
           gameState: st,
         };
 
+        for (const p of session.players || []) {
+          const uid = String(p.user?._id || p.user);
+          const pView = viewerView(st, uid);
+          emitToUser(uid, "match_started", {
+            ...payload,
+            session: pView,
+            state: pView,
+            gameState: pView,
+            me: pView.me,
+            seatIndex: p.seatIndex,
+            color: p.color,
+          });
+        }
+
         io.to(rooms).emit("match_started", payload);
         io.to(rooms).emit("game_started", payload);
         io.to(rooms).emit("game_state", { state: st, gameState: st });
-        if (typeof ack === "function") ack({ ok: true, data: payload });
+        const myView = viewerView(st, socket.user._id);
+        if (typeof ack === "function") ack({ ok: true, data: { ...payload, me: myView.me, seatIndex: myView.me?.seatIndex } });
       } catch (err) {
         logger.error("socket_start_match_error", { err: err.message, userId });
         socket.emit("game_error", { code: "START_FAILED", message: err.message });
