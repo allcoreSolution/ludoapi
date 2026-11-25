@@ -141,6 +141,14 @@ function loadConfig(env = process.env) {
 
     matchmaking: {
       queueTimeoutSeconds: toInt(env.MATCHMAKING_QUEUE_TIMEOUT_SECONDS, 60),
+      defaultRadiusKm: toNumber(env.MATCHMAKING_DEFAULT_RADIUS_KM, 5),
+      minRadiusKm: toNumber(env.MATCHMAKING_MIN_RADIUS_KM, 0.5),
+      maxRadiusKm: toNumber(env.MATCHMAKING_MAX_RADIUS_KM, 100),
+      allowedRadiusKm: toList(env.MATCHMAKING_ALLOWED_RADIUS_KM).map(Number).filter((n) => Number.isFinite(n) && n > 0).length > 0
+        ? toList(env.MATCHMAKING_ALLOWED_RADIUS_KM).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+        : [1, 5, 10, 25, 50],
+      maxLocationAccuracyMeters: toNumber(env.MATCHMAKING_MAX_LOCATION_ACCURACY_METERS, 1000),
+      ephemeralLocationRetentionSeconds: toInt(env.MATCHMAKING_EPHEMERAL_LOCATION_RETENTION_SECONDS, 300),
     },
 
     razorpay: {

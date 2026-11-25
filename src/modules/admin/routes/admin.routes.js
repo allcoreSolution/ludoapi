@@ -14,6 +14,7 @@ const economyCtl = require("../controllers/economy.controller");
 const contentCtl = require("../controllers/content.controller");
 const supportCtl = require("../../support/controllers/support.controller");
 const paymentsCtl = require("../controllers/payments.controller");
+const matchmakingCtl = require("../../matchmaking/controllers/matchmaking.controller");
 
 const router = express.Router();
 const { qs } = require("../../../../utils/adminHelpers");
@@ -43,6 +44,7 @@ router.post("/users/:id/coins", requireSuperAdmin, adminWriteLimiter, v.coinAdju
 // Games
 router.get("/games", v.listQuery, check, gamesCtl.listGames);
 router.get("/games/:id", v.idParam, check, gamesCtl.getGame);
+router.get("/matchmaking/stats", matchmakingCtl.getNearbyMatchmakingStats);
 
 // Coins & economy, reports
 router.get("/transactions", v.listQuery, check, economyCtl.listTransactions);

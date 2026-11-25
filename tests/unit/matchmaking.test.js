@@ -40,7 +40,7 @@ const runValidation = async (body) => {
 test("MatchmakingQueue schema has canonical statuses, fields, and default values", () => {
   const statusPath = MatchmakingQueue.schema.path("status");
   assert.ok(statusPath, "status field should exist on schema");
-  assert.deepEqual(statusPath.enumValues, ["waiting", "matched", "cancelled", "expired"]);
+  assert.deepEqual(statusPath.enumValues, ["waiting", "searching", "matched", "cancelled", "expired"]);
 
   const gameModePath = MatchmakingQueue.schema.path("gameMode");
   assert.ok(gameModePath, "gameMode field should exist on schema");

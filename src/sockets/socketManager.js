@@ -942,10 +942,53 @@ const init = (httpServer) => {
       }
     });
 
+    // 9. Nearby Location-Based Matchmaking Sockets
+    socket.on("nearby_matchmaking_join", async (data, ack) => {
+      try {
+        const matchmakingService = require("../modules/matchmaking/services/matchmaking.service");
+        const result = await matchmakingService.joinNearbyQueue(socket.user, data);
+        if (typeof ack === "function") ack({ ok: true, data: result });
+      } catch (err) {
+        logger.warn("nearby_matchmaking_join_error", { err: err.message, userId });
+        const code = err.code || (err.statusCode === 400 ? "BAD_REQUEST" : "MATCHMAKING_ERROR");
+        socket.emit("matchmaking_error", { code, message: err.message });
+        if (typeof ack === "function") ack({ ok: false, code, message: err.message });
+      }
+    });
+
+    socket.on("nearby_matchmaking_cancel", async (_data, ack) => {
+      try {
+        const matchmakingService = require("../modules/matchmaking/services/matchmaking.service");
+        const result = await matchmakingService.cancelNearbyQueue(userId);
+        if (typeof ack === "function") ack({ ok: true, data: result });
+      } catch (err) {
+        logger.warn("nearby_matchmaking_cancel_error", { err: err.message, userId });
+        if (typeof ack === "function") ack({ ok: false, message: err.message });
+      }
+    });
+
+    socket.on("nearby_location_update", async (data, ack) => {
+      try {
+        const matchmakingService = require("../modules/matchmaking/services/matchmaking.service");
+        const result = await matchmakingService.updateNearbyLocation(userId, data);
+        if (typeof ack === "function") ack({ ok: true, data: result });
+      } catch (err) {
+        logger.warn("nearby_location_update_error", { err: err.message, userId });
+        if (typeof ack === "function") ack({ ok: false, message: err.message });
+      }
+    });
+
     // Handle disconnecting to broadcast to all session rooms before leaving
     socket.on("disconnecting", () => {
       // Another live socket of the same user (reconnect overlap) => they are still online.
       if (!removePresence(userId, socket.id)) return;
+
+      // Automatically clean up active searching nearby queue on full disconnect
+      try {
+        const matchmakingService = require("../modules/matchmaking/services/matchmaking.service");
+        matchmakingService.cancelNearbyQueue(userId).catch(() => {});
+      } catch (_) {}
+
       for (const room of socket.rooms) {
         if (room.startsWith("session:")) {
           const sid = room.replace("session:", "");

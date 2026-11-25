@@ -11,12 +11,44 @@ const matchmakingQueueSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    queueType: {
+      type: String,
+      enum: ["standard", "nearby"],
+      default: "standard",
+      index: true,
+    },
     status: {
       type: String,
-      enum: ["waiting", "matched", "cancelled", "expired"],
+      enum: ["waiting", "searching", "matched", "cancelled", "expired"],
       default: "waiting",
       required: true,
       index: true,
+    },
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        default: "Point",
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude] in GeoJSON format
+      },
+    },
+    locationAccuracy: {
+      type: Number,
+      default: null,
+    },
+    radiusKm: {
+      type: Number,
+      default: null,
+    },
+    searchRadiusMeters: {
+      type: Number,
+      default: null,
+    },
+    socketId: {
+      type: String,
+      default: null,
     },
     entryFee: {
       type: Number,
@@ -45,6 +77,11 @@ const matchmakingQueueSchema = new mongoose.Schema(
       type: String,
       default: null,
       trim: true,
+    },
+    matchedSession: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "GameSession",
+      default: null,
     },
     opponent: {
       user: {
@@ -98,8 +135,12 @@ const matchmakingQueueSchema = new mongoose.Schema(
   }
 );
 
+// 2dsphere geospatial index for location-based nearby matching
+matchmakingQueueSchema.index({ location: "2dsphere" }, { sparse: true });
+
 // Compound index for atomic matchmaking queries (FIFO order for compatible opponents)
 matchmakingQueueSchema.index({ status: 1, entryFee: 1, gameMode: 1, maxPlayers: 1, queuedAt: 1 });
+matchmakingQueueSchema.index({ status: 1, queueType: 1, entryFee: 1, gameMode: 1, queuedAt: 1 });
 
 // User active queue lookup (prevents duplicate waiting entries)
 matchmakingQueueSchema.index({ user: 1, status: 1 });
