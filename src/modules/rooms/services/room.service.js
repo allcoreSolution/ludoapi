@@ -7,6 +7,7 @@ const logger = require("../../../../utils/logger");
 const { generateRoomCode } = require("../../../../utils/secureRandom");
 
 const GameRoom = require("../models/GameRoom");
+const GameSession = require("../../games/models/GameSession");
 const walletService = require("../../wallet/services/wallet.service");
 const { MODE_BY_PLAYERS, PLAYERS_BY_MODE } = require("../../games/engine/ludoEngine");
 
@@ -295,7 +296,14 @@ const getRoomDetails = async (roomCodeRaw) => {
     "name avatar" // email intentionally NOT exposed to other players
   );
   if (!room) throw new AppError("Room not found", 404);
-  return room;
+
+  // Look up active GameSession strictly for this room (status: "in_progress")
+  const activeSession = await GameSession.findOne({
+    room: room._id,
+    status: "in_progress",
+  });
+
+  return { room, session: activeSession };
 };
 
 // ------------------------------------------------------------------
