@@ -290,12 +290,29 @@ const joinRoom = async (user, roomCodeRaw) => {
 // 3. Details
 // ------------------------------------------------------------------
 const getRoomDetails = async (roomCodeRaw) => {
-  const room = await GameRoom.findOne({ roomCode: roomCodeRaw.trim().toUpperCase() }).populate(
+  const code = roomCodeRaw.trim().toUpperCase();
+  const room = await GameRoom.findOne({ roomCode: code }).populate(
     "host",
     "name avatar" // email intentionally NOT exposed to other players
   );
   if (!room) throw new AppError("Room not found", 404);
-  return room;
+
+  const roomObj = room.toObject ? room.toObject() : { ...room };
+  try {
+    const GameSession = require("../../games/models/GameSession");
+    const session = await GameSession.findOne({
+      $or: [{ room: room._id }, { roomCode: code }],
+      status: { $in: ["in_progress", "waiting"] },
+    }).sort({ createdAt: -1 });
+
+    if (session) {
+      roomObj.sessionId = String(session._id);
+      roomObj.matchId = String(session._id);
+      roomObj.gameId = String(session._id);
+    }
+  } catch (_) {}
+
+  return roomObj;
 };
 
 // ------------------------------------------------------------------
