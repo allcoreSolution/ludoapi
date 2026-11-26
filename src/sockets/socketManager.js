@@ -269,6 +269,15 @@ const withSessionLock = async (sessionId, fn) => {
 };
 
 // ------------------------------------------------------------------
+// Admin Telemetry broadcast helper
+// ------------------------------------------------------------------
+const emitAdminTelemetry = (event, payload) => {
+  if (!io) return false;
+  io.to("admin_telemetry").emit(event, payload);
+  return true;
+};
+
+// ------------------------------------------------------------------
 // Broadcast helpers (shared by sockets, REST controllers and the sweeper)
 // ------------------------------------------------------------------
 const broadcastTurnChanged = (session, extra = {}) => {
@@ -294,6 +303,20 @@ const broadcastTurnChanged = (session, extra = {}) => {
     gameState: st,
     ...extra,
   });
+
+  emitAdminTelemetry("admin_live_match_updated", {
+    sessionId: String(session._id),
+    roomCode: session.roomCode,
+    currentTurnPlayer: String(session.currentTurnPlayer),
+    currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+    turnStatus: session.turnStatus,
+    gamePhase: session.gamePhase,
+    diceValue: session.lastDiceValue ?? null,
+    turnNumber: session.turnNumber || 1,
+    actionSequence: session.actionSequence || 0,
+    timestamp: new Date(),
+  });
+
   return true;
 };
 
@@ -345,6 +368,16 @@ const broadcastMatchFinished = (session) => {
   };
   io.to(gameRooms(session)).emit("game_over", payload);
   io.to(gameRooms(session)).emit("match_finished", payload);
+
+  emitAdminTelemetry("admin_live_match_ended", {
+    sessionId: String(session._id),
+    roomCode: session.roomCode,
+    winnerId: session.winner ? String(session.winner?._id || session.winner) : null,
+    reason: session.settlement?.reason || null,
+    endedAt: session.endedAt || new Date(),
+    timestamp: new Date(),
+  });
+
   return true;
 };
 
@@ -428,6 +461,18 @@ const broadcastGameStartedToPlayers = (session, roomCode) => {
   io.to(rooms).emit("match_started", sharedPayload);
   io.to(rooms).emit("game_started", sharedPayload);
   io.to(rooms).emit("game_state", { state: st, gameState: st });
+
+  emitAdminTelemetry("admin_live_match_created", {
+    sessionId: String(session._id),
+    roomCode: rCode,
+    mode: session.gameMode,
+    entryFee: session.entryFee || 0,
+    prizePool: session.prizePool || 0,
+    playersCount: (session.players || []).length,
+    startedAt: session.startedAt || new Date(),
+    timestamp: new Date(),
+  });
+
   return true;
 };
 
@@ -480,6 +525,13 @@ const resumeActiveSessions = async (socket, userId, announce) => {
         currentPlayerId: String(s.currentTurnPlayer),
         state: st,
         gameState: st,
+      });
+
+      emitAdminTelemetry("admin_player_reconnected", {
+        playerId: String(userId),
+        sessionId: String(s._id),
+        roomCode: s.roomCode,
+        timestamp: new Date(),
       });
     }
     const mine = viewerView(st, userId);
@@ -580,8 +632,36 @@ const init = (httpServer) => {
         return next(new Error("Invalid or expired token."));
       }
 
-      if (!decoded || decoded.typ === "admin" || typeof decoded.id !== "string") {
+      if (!decoded || typeof decoded.id !== "string") {
         return next(new Error("Invalid token payload."));
+      }
+
+      // Check if this is an Admin connection
+      if (decoded.typ === "admin") {
+        const Admin = require("../modules/admin/models/admin.model");
+        const admin = await Admin.findById(decoded.id)
+          .select("name email role avatar isActive tokensValidAfter")
+          .lean();
+
+        if (!admin) {
+          return next(new Error("Admin not found."));
+        }
+        if (!admin.isActive) {
+          return next(new Error("Admin account is inactive."));
+        }
+        if (admin.tokensValidAfter && decoded.iat < Math.floor(new Date(admin.tokensValidAfter).getTime() / 1000)) {
+          return next(new Error("Session expired. Please login again."));
+        }
+
+        socket.isAdmin = true;
+        socket.admin = admin;
+        socket.user = {
+          _id: admin._id,
+          name: admin.name,
+          email: admin.email,
+          role: admin.role,
+        };
+        return next();
       }
 
       const user = await User.findById(decoded.id)
@@ -595,6 +675,7 @@ const init = (httpServer) => {
         return next(new Error("Account is inactive."));
       }
 
+      socket.isAdmin = false;
       socket.user = user;
       return next();
     } catch (err) {
@@ -604,6 +685,39 @@ const init = (httpServer) => {
   });
 
   io.on("connection", (socket) => {
+    if (socket.isAdmin) {
+      logger.info("admin_socket_connected", {
+        socketId: socket.id,
+        adminId: String(socket.admin._id),
+        email: socket.admin.email,
+      });
+
+      socket.on("join_admin_telemetry", (_data, ack) => {
+        socket.join("admin_telemetry");
+        logger.info("admin_joined_telemetry", { socketId: socket.id, adminId: String(socket.admin._id) });
+        if (typeof ack === "function") {
+          ack({ ok: true, message: "Joined admin telemetry channel." });
+        }
+      });
+
+      socket.on("leave_admin_telemetry", (_data, ack) => {
+        socket.leave("admin_telemetry");
+        if (typeof ack === "function") {
+          ack({ ok: true, message: "Left admin telemetry channel." });
+        }
+      });
+
+      socket.on("disconnect", (reason) => {
+        logger.info("admin_socket_disconnected", {
+          socketId: socket.id,
+          adminId: String(socket.admin._id),
+          reason,
+        });
+      });
+
+      return;
+    }
+
     const userId = String(socket.user._id);
     const userRoom = `user:${userId}`;
     socket.join(userRoom);
@@ -616,6 +730,19 @@ const init = (httpServer) => {
       socketId: socket.id,
       userId,
       name: socket.user.name,
+    });
+
+    socket.on("join_admin_telemetry", (_data, ack) => {
+      // Normal players are strictly forbidden from joining admin telemetry room!
+      if (typeof ack === "function") {
+        ack({ ok: false, code: "FORBIDDEN", message: "Admin access required" });
+      }
+    });
+
+    emitAdminTelemetry("admin_player_connected", {
+      playerId: userId,
+      socketId: socket.id,
+      timestamp: new Date(),
     });
 
     // 1. Join Room Lobby
@@ -1267,6 +1394,12 @@ const init = (httpServer) => {
       // Another live socket of the same user (reconnect overlap) => they are still online.
       if (!removePresence(userId, socket.id)) return;
 
+      emitAdminTelemetry("admin_player_disconnected", {
+        playerId: userId,
+        socketId: socket.id,
+        timestamp: new Date(),
+      });
+
       // Automatically clean up active searching nearby queue on full disconnect
       try {
         const matchmakingService = require("../modules/matchmaking/services/matchmaking.service");
@@ -1408,5 +1541,6 @@ module.exports = {
   broadcastMatchFinished,
   broadcastTimeoutResult,
   broadcastGameStartedToPlayers,
+  emitAdminTelemetry,
   close,
 };

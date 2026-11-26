@@ -75,3 +75,27 @@ Keys: `game {turnTimeoutSeconds, turnTimeoutGraceMs, matchDurationSeconds, sweep
 
 ## Not implemented
 Push notifications (needs FCM credentials + a product decision). `Notifications` in the panel has no backend yet.
+
+## Online Operations & Live Match Control (Phase 1)
+Base path: `/api/admin/online`. All routes protected by `protectAdmin`.
+
+### REST Endpoints
+| Method | Path | Description |
+|---|---|---|
+| GET | `/online/live-matches` | Lists real-time active matches. Filters: `roomCode`, `mode` (`twoPlayer`, `threePlayer`, `fourPlayer`), `status` (`in_progress`, `completed`, `abandoned`), `page`, `limit`. Returns `sessionId`, `roomCode`, `mode`, `status`, `entryFee`, `prizePool`, `elapsedSeconds`, `currentTurn`, `diceValue`, and `players` (with `socketConnected` and `connectionStatus`). |
+| GET | `/online/live-matches/:sessionId` | Detailed live snapshot of an online match. Returns token positions (`tokenId`, `step: -1..56`, `isHome`), dice state, `currentTurnRemainingTime` (`remainingMs`, `remainingSeconds`), connected player states, and recent move history (last 50 moves). Accepts 24-char ObjectId or roomCode. |
+| GET | `/online/queues` | Live matchmaking queue statistics grouped by mode (`twoPlayer`, `threePlayer`, `fourPlayer`). Includes `queueCount`, `oldestWaitingSeconds`, `averageWaitingSeconds`, breakdown by `byQueueType` (`standard`, `nearby`), and `totalQueued`. |
+
+### Socket.IO Telemetry
+- **Dedicated Room**: `admin_telemetry`
+- **Authentication**: JWT token with `typ: "admin"` in socket handshake (`auth.token`, `headers.authorization`, or `query.token`).
+- **Join Event**: `socket.emit("join_admin_telemetry", {}, (ack) => { ... })`. Normal users are rejected with `{ ok: false, code: "FORBIDDEN" }`.
+- **Events Broadcasted to Room**:
+  - `admin_live_match_created`: `{ sessionId, roomCode, mode, entryFee, prizePool, playersCount, startedAt, timestamp }`
+  - `admin_live_match_updated`: `{ sessionId, roomCode, currentTurnPlayer, currentSeat, turnStatus, gamePhase, diceValue, turnNumber, actionSequence, timestamp }`
+  - `admin_live_match_ended`: `{ sessionId, roomCode, winnerId, reason, endedAt, timestamp }`
+  - `admin_player_connected`: `{ playerId, socketId, timestamp }`
+  - `admin_player_disconnected`: `{ playerId, socketId, timestamp }`
+  - `admin_player_reconnected`: `{ playerId, sessionId, roomCode, timestamp }`
+  - `admin_queue_updated`: `{ mode, queueType, action, count?, timestamp }`
+

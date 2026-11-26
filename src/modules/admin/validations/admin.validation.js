@@ -8,8 +8,27 @@ const { validateRequest } = require("../../auth/validations/auth.validation");
 // so query/param rules are validators only and the controllers parse the values themselves.
 
 const { isStrongPassword, POLICY_MSG } = require("../../../../utils/passwordPolicy");
+const { MODE_NAMES } = require("../../games/engine/ludoEngine");
 
 const idParam = param("id").isMongoId().withMessage("Invalid id");
+
+const sessionIdParam = [
+  param("sessionId")
+    .isString()
+    .trim()
+    .notEmpty()
+    .withMessage("sessionId is required")
+    .custom((val) => /^[a-fA-F0-9]{24}$/.test(val) || /^[A-Za-z0-9]{6,12}$/.test(val))
+    .withMessage("Invalid sessionId (must be a valid 24-char ObjectId or roomCode)"),
+];
+
+const liveMatchesQuery = [
+  query("page").optional().isInt({ min: 1, max: 100000 }).withMessage("page must be a positive integer"),
+  query("limit").optional().isInt({ min: 1, max: 100 }).withMessage("limit must be between 1 and 100"),
+  query("mode").optional().isIn(MODE_NAMES).withMessage(`mode must be one of: ${MODE_NAMES.join(", ")}`),
+  query("status").optional().isIn(["in_progress", "completed", "abandoned"]).withMessage("Invalid status"),
+  query("roomCode").optional().isString().trim().isLength({ max: 12 }).withMessage("roomCode must be at most 12 characters"),
+];
 
 const listQuery = [
   query("page").optional().isInt({ min: 1, max: 100000 }).withMessage("page must be a positive integer"),
@@ -128,4 +147,6 @@ module.exports = {
   ticketStatusValidation,
   withdrawalApproveValidation,
   withdrawalRejectValidation,
+  sessionIdParam,
+  liveMatchesQuery,
 };

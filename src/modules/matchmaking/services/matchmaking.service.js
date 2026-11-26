@@ -276,6 +276,13 @@ const joinQueue = async (user, body = {}) => {
         isEntryFeeDeducted: entryFee > 0,
       });
 
+      socketManager.emitAdminTelemetry("admin_queue_updated", {
+        mode: gameMode,
+        queueType: "standard",
+        action: "matched",
+        timestamp: new Date(),
+      });
+
       // Start the match right now: nobody has to send start_match, and two phones racing to
       // start the same room can no longer happen. If it fails the old flow still works
       // (clients can call start_match / POST /api/games/start themselves).
@@ -378,6 +385,13 @@ const joinQueue = async (user, body = {}) => {
       queuedAt: new Date(),
       expiresAt,
       isEntryFeeDeducted: entryFee > 0,
+    });
+
+    socketManager.emitAdminTelemetry("admin_queue_updated", {
+      mode: gameMode,
+      queueType: "standard",
+      action: "enqueued",
+      timestamp: new Date(),
     });
 
     socketManager.emitToUser(userId, "matchmaking_waiting", {
@@ -523,6 +537,13 @@ const cancelQueue = async (userId) => {
     status: "cancelled",
     queueId: cancelled._id,
     refundedAmount,
+  });
+
+  socketManager.emitAdminTelemetry("admin_queue_updated", {
+    mode: cancelled.gameMode || "twoPlayer",
+    queueType: cancelled.queueType || "standard",
+    action: "cancelled",
+    timestamp: new Date(),
   });
 
   return {
@@ -778,6 +799,13 @@ const joinNearbyQueue = async (user, body = {}) => {
         isEntryFeeDeducted: entryFee > 0,
       });
 
+      socketManager.emitAdminTelemetry("admin_queue_updated", {
+        mode: gameMode,
+        queueType: "standard",
+        action: "matched",
+        timestamp: new Date(),
+      });
+
       if (session) {
         socketManager.joinUsersToSession([matchedCandidate.user, userId], session);
       }
@@ -885,6 +913,13 @@ const joinNearbyQueue = async (user, body = {}) => {
       queuedAt: new Date(),
       expiresAt,
       isEntryFeeDeducted: entryFee > 0,
+    });
+
+    socketManager.emitAdminTelemetry("admin_queue_updated", {
+      mode: gameMode,
+      queueType: "standard",
+      action: "enqueued",
+      timestamp: new Date(),
     });
 
     socketManager.emitToUser(userId, "matchmaking_status", {
@@ -1030,6 +1065,13 @@ const cancelNearbyQueue = async (userId) => {
     status: "cancelled",
     queueId: cancelled._id,
     refundedAmount,
+  });
+
+  socketManager.emitAdminTelemetry("admin_queue_updated", {
+    mode: cancelled.gameMode || "twoPlayer",
+    queueType: cancelled.queueType || "standard",
+    action: "cancelled",
+    timestamp: new Date(),
   });
 
   return {

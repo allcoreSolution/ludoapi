@@ -40,6 +40,7 @@ const PROTECTED = [
   ["GET", "/api/admin/users"], ["GET", `/api/admin/users/${ID}`],
   ["PATCH", `/api/admin/users/${ID}/status`], ["POST", `/api/admin/users/${ID}/coins`],
   ["GET", "/api/admin/games"], ["GET", `/api/admin/games/${ID}`],
+  ["GET", "/api/admin/online/live-matches"], ["GET", `/api/admin/online/live-matches/${ID}`], ["GET", "/api/admin/online/queues"],
   ["GET", "/api/admin/transactions"], ["GET", "/api/admin/economy/summary"], ["GET", "/api/admin/reports/daily"],
   ["GET", "/api/admin/banners"], ["POST", "/api/admin/banners"], ["PATCH", `/api/admin/banners/${ID}`], ["DELETE", `/api/admin/banners/${ID}`],
   ["GET", "/api/admin/support/tickets"], ["GET", `/api/admin/support/tickets/${ID}`],
