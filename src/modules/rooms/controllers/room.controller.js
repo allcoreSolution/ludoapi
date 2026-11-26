@@ -117,8 +117,61 @@ const joinRoom = asyncHandler(async (req, res) => {
 
 // 3. Get Room Details by Code
 const getRoomDetails = asyncHandler(async (req, res) => {
-  const room = await roomService.getRoomDetails(req.params.roomCode);
-  return res.status(200).json({ success: true, data: { room } });
+  const result = await roomService.getRoomDetails(req.params.roomCode);
+  const room = result.room || result;
+  const session = result.session || null;
+
+  const sessionId = session ? String(session._id) : null;
+  const matchId = sessionId;
+  const roomCode = room.roomCode;
+  const roomId = roomCode;
+
+  // Authenticated player identity if req.user is a participant
+  const userId = req.user ? String(req.user._id) : null;
+  const myPlayer = userId
+    ? (room.players || []).find((p) => String(p.user?._id || p.user) === userId)
+    : null;
+  const isHost = myPlayer
+    ? Boolean(myPlayer.isHost !== undefined ? myPlayer.isHost : myPlayer.seatIndex === 0)
+    : (userId && String(room.host?._id || room.host) === userId);
+  const playerInfo = myPlayer
+    ? {
+        userId,
+        playerId: userId,
+        seatIndex: myPlayer.seatIndex,
+        seat: myPlayer.seatIndex,
+        color: (myPlayer.color || (myPlayer.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+        isHost,
+      }
+    : null;
+
+  const baseState = session ? socketManager.formatSessionState(session) : null;
+  const gameState = baseState && userId ? socketManager.viewerView(baseState, userId) : baseState;
+
+  return res.status(200).json({
+    success: true,
+    roomId,
+    roomCode,
+    sessionId,
+    matchId,
+    player: playerInfo,
+    me: playerInfo,
+    players: room.players,
+    gameState,
+    state: gameState,
+    data: {
+      room,
+      roomId,
+      roomCode,
+      sessionId,
+      matchId,
+      player: playerInfo,
+      me: playerInfo,
+      players: room.players,
+      gameState,
+      state: gameState,
+    },
+  });
 });
 
 // 4. Leave / Cancel Game Room

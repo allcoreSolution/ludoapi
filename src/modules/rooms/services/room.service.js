@@ -7,6 +7,7 @@ const logger = require("../../../../utils/logger");
 const { generateRoomCode } = require("../../../../utils/secureRandom");
 
 const GameRoom = require("../models/GameRoom");
+const GameSession = require("../../games/models/GameSession");
 const walletService = require("../../wallet/services/wallet.service");
 const { MODE_BY_PLAYERS, PLAYERS_BY_MODE } = require("../../games/engine/ludoEngine");
 
@@ -298,21 +299,23 @@ const getRoomDetails = async (roomCodeRaw) => {
   if (!room) throw new AppError("Room not found", 404);
 
   const roomObj = room.toObject ? room.toObject() : { ...room };
+  let activeSession = null;
   try {
     const GameSession = require("../../games/models/GameSession");
-    const session = await GameSession.findOne({
+    activeSession = await GameSession.findOne({
       $or: [{ room: room._id }, { roomCode: code }],
       status: { $in: ["in_progress", "waiting"] },
     }).sort({ createdAt: -1 });
 
-    if (session) {
-      roomObj.sessionId = String(session._id);
-      roomObj.matchId = String(session._id);
-      roomObj.gameId = String(session._id);
+    if (activeSession) {
+      const sid = String(activeSession._id);
+      roomObj.sessionId = sid;
+      roomObj.matchId = sid;
+      roomObj.gameId = sid;
     }
   } catch (_) {}
 
-  return roomObj;
+  return { room: roomObj, session: activeSession, sessionId: roomObj.sessionId, matchId: roomObj.matchId };
 };
 
 // ------------------------------------------------------------------

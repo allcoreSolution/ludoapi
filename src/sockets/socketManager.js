@@ -280,8 +280,10 @@ const broadcastTurnChanged = (session, extra = {}) => {
     gameId: String(session._id),
     sessionId: String(session._id),
     matchId: String(session._id),
+    currentTurnPlayer: String(session.currentTurnPlayer),
     currentPlayerId: String(session.currentTurnPlayer),
-    currentTurnSeat: session.currentTurnSeat,
+    currentTurnSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+    currentSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
     turnNumber: session.turnNumber || 1,
     stateVersion: session.actionSequence || session.__v || 0,
     actionSequence: session.actionSequence || session.__v || 0,
@@ -303,6 +305,14 @@ const broadcastGameState = (session) => {
     roomCode: session.roomCode,
     sessionId: String(session._id),
     matchId: String(session._id),
+    gameId: String(session._id),
+    stateVersion: session.actionSequence || session.__v || 0,
+    actionSequence: session.actionSequence || session.__v || 0,
+    currentTurnPlayer: String(session.currentTurnPlayer),
+    currentPlayerId: String(session.currentTurnPlayer),
+    currentTurnSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+    turnNumber: session.turnNumber || 1,
+    players: st.players,
     state: st,
     gameState: st,
   });
@@ -464,6 +474,10 @@ const resumeActiveSessions = async (socket, userId, announce) => {
         roomCode: s.roomCode,
         userId,
         playerId: userId,
+        stateVersion: s.actionSequence || s.__v || 0,
+        actionSequence: s.actionSequence || s.__v || 0,
+        currentTurnPlayer: String(s.currentTurnPlayer),
+        currentPlayerId: String(s.currentTurnPlayer),
         state: st,
         gameState: st,
       });
@@ -496,6 +510,10 @@ const resumeActiveSessions = async (socket, userId, announce) => {
       matchId: String(s._id),
       roomCode: s.roomCode,
       roomId: s.roomCode,
+      stateVersion: s.actionSequence || s.__v || 0,
+      actionSequence: s.actionSequence || s.__v || 0,
+      currentTurnPlayer: String(s.currentTurnPlayer),
+      currentPlayerId: String(s.currentTurnPlayer),
       me,
       player: me,
       players: st.players,
@@ -679,13 +697,14 @@ const init = (httpServer) => {
           userId,
           playerId: userId,
           name: socket.user.name,
-          me,
-          player: me,
+          currentTurnPlayer: String(session.currentTurnPlayer),
+          currentPlayerId: String(session.currentTurnPlayer),
+          currentTurnSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
           turnNumber: session.turnNumber || 1,
           stateVersion: session.actionSequence || session.__v || 0,
           actionSequence: session.actionSequence || session.__v || 0,
-          state: myState,
-          gameState: myState,
+          state: st,
+          gameState: st,
         };
 
         const rooms = gameRooms(session, data?.gameId);
@@ -696,6 +715,12 @@ const init = (httpServer) => {
           gameId: String(session._id),
           roomId: session.roomCode,
           roomCode: session.roomCode,
+          stateVersion: session.actionSequence || session.__v || 0,
+          actionSequence: session.actionSequence || session.__v || 0,
+          currentTurnPlayer: String(session.currentTurnPlayer),
+          currentPlayerId: String(session.currentTurnPlayer),
+          currentTurnSeat: session.currentTurnSeat !== undefined ? session.currentTurnSeat : 0,
+          turnNumber: session.turnNumber || 1,
           me,
           player: me,
           players: st.players,
@@ -812,6 +837,10 @@ const init = (httpServer) => {
             gameId: String(session._id),
             sessionId: String(session._id),
             matchId: String(session._id),
+            currentTurnPlayer: String(updatedSession.currentTurnPlayer),
+            currentPlayerId: String(updatedSession.currentTurnPlayer),
+            currentTurnSeat: updatedSession.currentTurnSeat !== undefined ? updatedSession.currentTurnSeat : 0,
+            currentSeat: updatedSession.currentTurnSeat !== undefined ? updatedSession.currentTurnSeat : 0,
             playerId: String(socket.user._id),
             actionId,
             turnNumber: updatedSession.turnNumber || 1,
@@ -843,6 +872,7 @@ const init = (httpServer) => {
               gameId: String(session._id),
               sessionId: String(session._id),
               matchId: String(session._id),
+              currentTurnPlayer: String(updatedSession.currentTurnPlayer),
               currentPlayerId: String(updatedSession.currentTurnPlayer),
               currentTurnSeat: updatedSession.currentTurnSeat,
               currentSeat: updatedSession.currentTurnSeat,
@@ -861,7 +891,21 @@ const init = (httpServer) => {
           }
 
           // Also emit updated game_state to all room channels
-          io.to(rooms).emit("game_state", { state: st, gameState: st });
+          io.to(rooms).emit("game_state", {
+            roomId: session.roomCode,
+            roomCode: session.roomCode,
+            gameId: String(session._id),
+            sessionId: String(session._id),
+            matchId: String(session._id),
+            stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+            actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+            currentTurnPlayer: String(updatedSession.currentTurnPlayer),
+            currentPlayerId: String(updatedSession.currentTurnPlayer),
+            currentTurnSeat: updatedSession.currentTurnSeat,
+            turnNumber: updatedSession.turnNumber || 1,
+            state: st,
+            gameState: st,
+          });
 
           if (typeof ack === "function") ack({ ok: true, data: { ...rollData, state: st, gameState: st } });
         } catch (err) {
@@ -925,6 +969,10 @@ const init = (httpServer) => {
             gameId: String(session._id),
             sessionId: String(session._id),
             matchId: String(session._id),
+            currentTurnPlayer: String(updatedSession.currentTurnPlayer),
+            currentPlayerId: String(updatedSession.currentTurnPlayer),
+            currentTurnSeat: updatedSession.currentTurnSeat !== undefined ? updatedSession.currentTurnSeat : 0,
+            currentSeat: updatedSession.currentTurnSeat !== undefined ? updatedSession.currentTurnSeat : 0,
             playerId: String(socket.user._id),
             actionId,
             turnNumber: updatedSession.turnNumber || 1,
@@ -950,6 +998,7 @@ const init = (httpServer) => {
               gameId: String(session._id),
               sessionId: String(session._id),
               matchId: String(session._id),
+              currentTurnPlayer: String(updatedSession.currentTurnPlayer),
               currentPlayerId: String(updatedSession.currentTurnPlayer),
               currentTurnSeat: updatedSession.currentTurnSeat,
               currentSeat: updatedSession.currentTurnSeat,
@@ -968,7 +1017,21 @@ const init = (httpServer) => {
           }
 
           // Also emit updated game_state to all room channels
-          io.to(rooms).emit("game_state", { state: st, gameState: st });
+          io.to(rooms).emit("game_state", {
+            roomId: session.roomCode,
+            roomCode: session.roomCode,
+            gameId: String(session._id),
+            sessionId: String(session._id),
+            matchId: String(session._id),
+            stateVersion: updatedSession.actionSequence || updatedSession.__v || 0,
+            actionSequence: updatedSession.actionSequence || updatedSession.__v || 0,
+            currentTurnPlayer: String(updatedSession.currentTurnPlayer),
+            currentPlayerId: String(updatedSession.currentTurnPlayer),
+            currentTurnSeat: updatedSession.currentTurnSeat,
+            turnNumber: updatedSession.turnNumber || 1,
+            state: st,
+            gameState: st,
+          });
 
           if (moveData.gameCompleted) {
             const finishedPayload = {
