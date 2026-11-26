@@ -118,7 +118,7 @@ const healthCheckHandler = (req, res) => {
   res.status(200).json({
     success: true,
     message: "Ludo Supreme Backend is Running",
-    version: process.env.npm_package_version || "1.0.0",
+    version: process.env.npm_package_version || "1.2.1",
   });
 };
 app.get("/", healthCheckHandler);

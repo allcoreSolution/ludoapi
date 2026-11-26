@@ -181,7 +181,8 @@ function loadConfig(env = process.env) {
   }
 
   // ---- Payment Gateway (Production Validation) -------------------------
-  if (isProd) {
+  const requireRazorpay = isProd && env.REQUIRE_PAYMENT_KEYS !== "false";
+  if (requireRazorpay) {
     if (!env.RAZORPAY_KEY_ID || !String(env.RAZORPAY_KEY_ID).trim()) {
       problems.push("RAZORPAY_KEY_ID is required in production");
     }

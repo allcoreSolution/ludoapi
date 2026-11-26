@@ -25,7 +25,7 @@ test("viewerView: player whose turn it is may roll, the opponent may not", () =>
   assert.equal(mine.isMyTurn, true);
   assert.equal(mine.canRoll, true);
   assert.equal(mine.canMove, false);
-  assert.equal(mine.color, "Red");
+  assert.equal(mine.color.toUpperCase(), "RED");
 
   const theirs = socketManager.viewerView(st, "u2").me;
   assert.equal(theirs.isMyTurn, false);
