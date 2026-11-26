@@ -316,7 +316,11 @@ test("2. Room details after session creation returns valid sessionId, matchId, g
       populate: () => Promise.resolve(mockRoom),
     });
     GameSession.findOne = (query) => {
-      if (query && query.room === mockRoom._id && query.status === "in_progress") {
+      const match =
+        query &&
+        (query.room === mockRoom._id ||
+          (query.$or && query.$or.some((c) => c.room === mockRoom._id || c.roomCode === mockRoom.roomCode)));
+      if (match) {
         return Promise.resolve(session);
       }
       return Promise.resolve(null);
@@ -381,7 +385,11 @@ test("3. Correct sessionId and player identity returned for joining player (Seat
       populate: () => Promise.resolve(mockRoom),
     });
     GameSession.findOne = (query) => {
-      if (query && query.room === mockRoom._id && query.status === "in_progress") {
+      const match =
+        query &&
+        (query.room === mockRoom._id ||
+          (query.$or && query.$or.some((c) => c.room === mockRoom._id || c.roomCode === mockRoom.roomCode)));
+      if (match) {
         return Promise.resolve(session);
       }
       return Promise.resolve(null);
@@ -445,7 +453,11 @@ test("4. No sessionId leakage from another room and completed/expired sessions a
     });
     // Strict query check: room._id must match
     GameSession.findOne = (query) => {
-      if (query && query.room === mockRoom._id && query.status === "in_progress") {
+      const match =
+        query &&
+        (query.room === mockRoom._id ||
+          (query.$or && query.$or.some((c) => c.room === mockRoom._id || c.roomCode === mockRoom.roomCode)));
+      if (match) {
         return Promise.resolve(null); // No active session for this room
       }
       return Promise.resolve(otherRoomSession);
@@ -456,7 +468,10 @@ test("4. No sessionId leakage from another room and completed/expired sessions a
 
     // Case 2: Session for this room is completed/finished
     GameSession.findOne = (query) => {
-      if (query && query.status === "in_progress") {
+      const isProgressQuery =
+        query &&
+        (query.status === "in_progress" || (query.status?.$in && query.status.$in.includes("in_progress")));
+      if (isProgressQuery) {
         return Promise.resolve(null); // Only in_progress sessions are active
       }
       return Promise.resolve({ _id: "6742db5e9a4f21001e3a9899", room: mockRoom._id, status: "finished" });

@@ -504,7 +504,7 @@ const resumeActiveSessions = async (socket, userId, announce) => {
       currentTurnPlayer: String(s.currentTurnPlayer),
     });
 
-    socket.emit("active_game", {
+    const resumePayload = {
       gameId: String(s._id),
       sessionId: String(s._id),
       matchId: String(s._id),
@@ -514,22 +514,49 @@ const resumeActiveSessions = async (socket, userId, announce) => {
       actionSequence: s.actionSequence || s.__v || 0,
       currentTurnPlayer: String(s.currentTurnPlayer),
       currentPlayerId: String(s.currentTurnPlayer),
+      currentTurnSeat: s.currentTurnSeat !== undefined ? s.currentTurnSeat : 0,
+      turnNumber: s.turnNumber || 1,
       me,
       player: me,
       players: st.players,
       state: mine,
       gameState: mine,
-    });
+    };
+
+    socket.emit("active_game", resumePayload);
+    socket.emit("game_state", resumePayload);
   }
 };
 
 const init = (httpServer) => {
   if (io) return io;
 
+  const configuredOrigins = (config.cors?.origins || []).map((o) => o.replace(/\/+$/, "").toLowerCase());
+
   io = new Server(httpServer, {
+    path: "/socket.io",
+    transports: ["websocket", "polling"],
+    allowUpgrades: true,
     cors: {
-      origin: config.cors.origins.length > 0 ? config.cors.origins : "*",
-      methods: ["GET", "POST"],
+      origin(origin, callback) {
+        // Mobile clients (Flutter Android/iOS) and server-to-server calls send no Origin header
+        if (!origin) return callback(null, true);
+        const norm = origin.replace(/\/+$/, "").toLowerCase();
+        if (configuredOrigins.includes("*") || configuredOrigins.length === 0) return callback(null, true);
+        if (configuredOrigins.includes(norm)) return callback(null, true);
+        if (norm.endsWith(".onrender.com")) return callback(null, true);
+        for (const pattern of configuredOrigins) {
+          if (pattern.startsWith("*.")) {
+            const domainSuffix = pattern.slice(2);
+            try {
+              const urlObj = new URL(norm);
+              if (urlObj.hostname.endsWith(domainSuffix)) return callback(null, true);
+            } catch {}
+          }
+        }
+        return callback(null, true);
+      },
+      methods: ["GET", "POST", "OPTIONS"],
       credentials: true,
     },
     pingTimeout: 30000,
@@ -599,6 +626,28 @@ const init = (httpServer) => {
           if (typeof ack === "function") ack({ ok: false, code: "BAD_REQUEST", message: "roomCode is required" });
           return;
         }
+
+        const GameRoom = require("../modules/rooms/models/GameRoom");
+        const room = await GameRoom.findOne({ roomCode });
+        const activeSession = await GameSession.findOne({
+          $or: [{ roomCode }, ...(room ? [{ room: room._id }] : [])],
+          status: "in_progress",
+        });
+
+        if (room) {
+          const isParticipant = (room.players || []).some((p) => String(p.user?._id || p.user) === userId);
+          if (!isParticipant) {
+            if (typeof ack === "function") ack({ ok: false, code: "FORBIDDEN", message: "You are not a participant in this game room" });
+            return;
+          }
+        } else if (activeSession) {
+          const isParticipant = (activeSession.players || []).some((p) => String(p.user?._id || p.user) === userId);
+          if (!isParticipant) {
+            if (typeof ack === "function") ack({ ok: false, code: "FORBIDDEN", message: "You are not a participant in this game room" });
+            return;
+          }
+        }
+
         socket.join(`room:${roomCode}`);
         io.to(`room:${roomCode}`).emit("player_joined", {
           roomCode,
@@ -610,14 +659,12 @@ const init = (httpServer) => {
         });
 
         // If a game session is already in progress for this roomCode, join and sync immediately
-        try {
-          const activeSession = await GameSession.findOne({ roomCode, status: "in_progress" });
-          if (activeSession) {
-            joinSocketToSession(socket, activeSession);
-            const st = formatSessionState(activeSession);
-            socket.emit("game_state", { state: st, gameState: st });
-          }
-        } catch (_) {}
+        if (activeSession) {
+          joinSocketToSession(socket, activeSession);
+          const st = formatSessionState(activeSession);
+          const myState = viewerView(st, userId);
+          socket.emit("game_state", { state: myState, gameState: myState });
+        }
 
         if (typeof ack === "function") ack({ ok: true, roomCode });
       } catch (err) {
@@ -660,21 +707,24 @@ const init = (httpServer) => {
           return;
         }
 
+        const st = formatSessionState(session);
+        const myPlayer = (session.players || []).find((p) => String(p.user?._id || p.user) === userId);
+        if (!myPlayer) {
+          if (typeof ack === "function") ack({ ok: false, code: "FORBIDDEN", message: "You are not a participant in this game session" });
+          return;
+        }
+
         joinSocketToSession(socket, session);
         joinUsersToSession(session.players.map((p) => p.user?._id || p.user), session);
 
-        const st = formatSessionState(session);
-        const myPlayer = (session.players || []).find((p) => String(p.user?._id || p.user) === userId);
-        const me = myPlayer
-          ? {
-              userId,
-              playerId: userId,
-              seatIndex: myPlayer.seatIndex,
-              seat: myPlayer.seatIndex,
-              color: (myPlayer.color || (myPlayer.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
-              isHost: Boolean(myPlayer.isHost !== undefined ? myPlayer.isHost : myPlayer.seatIndex === 0),
-            }
-          : null;
+        const me = {
+          userId,
+          playerId: userId,
+          seatIndex: myPlayer.seatIndex,
+          seat: myPlayer.seatIndex,
+          color: (myPlayer.color || (myPlayer.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+          isHost: Boolean(myPlayer.isHost !== undefined ? myPlayer.isHost : myPlayer.seatIndex === 0),
+        };
         const myState = viewerView(st, userId);
 
         logger.info("player_joined_session", {

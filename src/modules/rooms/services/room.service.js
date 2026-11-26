@@ -302,10 +302,13 @@ const getRoomDetails = async (roomCodeRaw) => {
   let activeSession = null;
   try {
     const GameSession = require("../../games/models/GameSession");
-    activeSession = await GameSession.findOne({
+    const sessionQuery = GameSession.findOne({
       $or: [{ room: room._id }, { roomCode: code }],
-      status: { $in: ["in_progress", "waiting"] },
-    }).sort({ createdAt: -1 });
+      status: "in_progress",
+    });
+    activeSession = await (sessionQuery && typeof sessionQuery.sort === "function"
+      ? sessionQuery.sort({ createdAt: -1 })
+      : sessionQuery);
 
     if (activeSession) {
       const sid = String(activeSession._id);
