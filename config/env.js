@@ -163,6 +163,12 @@ function loadConfig(env = process.env) {
       minWithdrawal: toInt(env.MIN_WITHDRAWAL_AMOUNT, 50),
       maxWithdrawal: toInt(env.MAX_WITHDRAWAL_AMOUNT, 25000),
     },
+
+    appLinks: {
+      packageName: env.ANDROID_PACKAGE_NAME || "com.ludosupreme.game",
+      sha256Fingerprints: toList(env.ANDROID_SHA256_FINGERPRINTS),
+      downloadUrl: env.APP_DOWNLOAD_URL || "https://play.google.com/store/apps/details?id=com.ludosupreme.game",
+    },
   };
 
   if (config.economy.platformFeePercent < 0 || config.economy.platformFeePercent > 50) {

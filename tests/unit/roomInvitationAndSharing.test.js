@@ -103,6 +103,8 @@ test("1. Valid room invitation landing page returns 200 HTML with code and deep 
   assert.ok(html.includes("50 🪙"), "Landing page shows entry fee");
   assert.ok(html.includes("1 / 2"), "Landing page shows available slots / players");
   assert.ok(html.includes("badge-success"), "Landing page shows JOINABLE status badge");
+  assert.ok(html.includes("Open Ludo Supreme"), "Landing page contains Open Ludo Supreme button");
+  assert.ok(html.includes("Download App"), "Landing page contains Download App button");
 });
 
 test("2. Invalid room code parameter on /invite returns 400 Validation Failed", async () => {
@@ -203,7 +205,9 @@ test("8. GET /api/rooms/:roomCode/check returns full availability schema for act
   assert.equal(body.gameStarted, false);
   assert.equal(body.roomExpired, false);
   assert.equal(body.message, "Room is available to join");
+  assert.equal(body.entryCoins, 200);
   assert.equal(body.entryFee, 200);
+  assert.equal(body.gameMode, "twoPlayer");
 });
 
 test("9. GET /api/rooms/:roomCode/check returns 404 and roomExists: false for non-existent room", async () => {
@@ -322,16 +326,60 @@ test("16. Security check: public endpoints never expose player IDs or private us
 });
 
 test("17. Android App Links verification endpoint /.well-known/assetlinks.json", async () => {
-  const res = await get("/.well-known/assetlinks.json");
-  assert.equal(res.status, 200);
-  assert.match(res.headers.get("content-type"), /application\/json/);
+  const origFp = process.env.ANDROID_SHA256_FINGERPRINTS;
+  process.env.ANDROID_SHA256_FINGERPRINTS = "14:6D:E9:4A:12:34:56:78:90:AB:CD:EF";
 
-  const body = await res.json();
-  assert.ok(Array.isArray(body));
-  assert.equal(body[0].target.namespace, "android_app");
+  try {
+    const res = await get("/.well-known/assetlinks.json");
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /application\/json/);
+    assert.ok(res.headers.get("cache-control").includes("public"));
+
+    const body = await res.json();
+    assert.ok(Array.isArray(body));
+    assert.equal(body[0].target.namespace, "android_app");
+    assert.equal(body[0].target.package_name, "com.ludosupreme.game");
+    assert.deepEqual(body[0].target.sha256_cert_fingerprints, ["14:6D:E9:4A:12:34:56:78:90:AB:CD:EF"]);
+  } finally {
+    process.env.ANDROID_SHA256_FINGERPRINTS = origFp;
+  }
 });
 
 test("18. Existing protected route GET /api/rooms/:roomCode still requires JWT", async () => {
   const res = await get("/api/rooms/CHCK01");
   assert.equal(res.status, 401, "Protected room route rejects request without JWT");
+});
+
+test("19. GET /join/:roomCode primary deep link route returns 200 HTML with code and Open Ludo Supreme", async () => {
+  seedRoom("HYYKM3", { maxPlayers: 2, entryFee: 100, gameMode: "twoPlayer" });
+
+  const res = await get("/join/HYYKM3");
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type"), /text\/html/);
+
+  const html = await res.text();
+  assert.ok(html.includes("HYYKM3"), "Landing page contains room code");
+  assert.ok(html.includes("ludosupreme://join?code=HYYKM3"), "Landing page contains deep link");
+  assert.ok(html.includes("Open Ludo Supreme"), "Landing page contains Open Ludo Supreme button");
+  assert.ok(html.includes("100 🪙"), "Landing page shows coins");
+  assert.ok(html.includes("2 Players"), "Landing page shows game mode");
+});
+
+test("20. GET /join/:roomCode with invalid code returns 400 Validation Failed", async () => {
+  const res = await get("/join/bad!");
+  assert.equal(res.status, 400);
+
+  const body = await res.json();
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Validation Failed");
+});
+
+test("21. GET /api/rooms/share-template without explicit inviteUrl defaults to /join/:roomCode", async () => {
+  const res = await get("/api/rooms/share-template?roomCode=HYYKM3&entryCoins=100&gameMode=twoPlayer");
+  assert.equal(res.status, 200);
+
+  const body = await res.json();
+  assert.equal(body.success, true);
+  assert.ok(body.data.inviteUrl.includes("/join/HYYKM3"), "Default inviteUrl uses /join/:roomCode");
+  assert.ok(body.data.shareMessage.includes("/join/HYYKM3"), "Share message contains /join/ link");
 });

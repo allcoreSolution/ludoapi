@@ -37,6 +37,9 @@ const checkRoomAvailability = async (rawCode) => {
       availableSlots: 0,
       gameStarted: false,
       roomExpired: false,
+      entryCoins: 0,
+      entryFee: 0,
+      gameMode: null,
       message: "Invalid room code format. Must be 6 alphanumeric characters.",
     };
   }
@@ -56,6 +59,9 @@ const checkRoomAvailability = async (rawCode) => {
       availableSlots: 0,
       gameStarted: false,
       roomExpired: false,
+      entryCoins: 0,
+      entryFee: 0,
+      gameMode: null,
       message: "Room not found",
     };
   }
@@ -101,6 +107,7 @@ const checkRoomAvailability = async (rawCode) => {
     gameStarted,
     roomExpired,
     message,
+    entryCoins: Number(room.entryFee) || 0,
     entryFee: Number(room.entryFee) || 0,
     gameMode: room.gameMode || "twoPlayer",
   };
@@ -125,8 +132,8 @@ const buildShareTemplate = ({ roomCode, entryCoins, gameMode, inviteUrl, req }) 
   const finalInviteUrl = inviteUrl
     ? String(inviteUrl).trim().replace(/^(https?):\/([^\/])/, "$1://$2")
     : code
-    ? `${defaultBaseUrl}/invite/${code}`
-    : `${defaultBaseUrl}/invite`;
+    ? `${defaultBaseUrl}/join/${code}`
+    : `${defaultBaseUrl}/join`;
 
   let formattedMessage = null;
   if (code) {
@@ -197,7 +204,10 @@ const generateInviteHtml = (availability, req) => {
   const isJoinable = Boolean(availability.isJoinable);
   const message = escapeHtml(availability.message || "Room Status");
   const deepLink = code ? `ludosupreme://join?code=${encodeURIComponent(code)}` : "ludosupreme://";
-  const playStoreUrl = "https://play.google.com/store/apps/details?id=com.ludosupreme.game";
+  const downloadUrl = escapeHtml(process.env.APP_DOWNLOAD_URL || "https://play.google.com/store/apps/details?id=com.ludosupreme.game");
+  const modeLabel =
+    availability.gameMode === "threePlayer" ? "3 Players" :
+    availability.gameMode === "fourPlayer" ? "4 Players" : "2 Players";
 
   let statusBadgeClass = "badge-success";
   let statusBadgeText = "JOINABLE";
@@ -252,7 +262,7 @@ const generateInviteHtml = (availability, req) => {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     body {
-      background: radial-gradient(circle at top, #2b124c 0%, #120b22 100%);
+      background: radial-gradient(circle at 50% 15%, #112240 0%, #0a192f 55%, #020c1b 100%);
       color: #ffffff;
       min-height: 100vh;
       display: flex;
@@ -262,41 +272,44 @@ const generateInviteHtml = (availability, req) => {
       padding: 20px;
     }
     .card {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      backdrop-filter: blur(12px);
+      background: rgba(17, 34, 64, 0.75);
+      border: 1.5px solid rgba(255, 215, 0, 0.35);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
       border-radius: 24px;
       width: 100%;
       max-width: 420px;
       padding: 32px 24px;
       text-align: center;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6), 0 0 35px rgba(255, 215, 0, 0.08);
     }
     .brand-logo {
       width: 72px;
       height: 72px;
-      background: linear-gradient(135deg, #ff416c, #ff4b2b);
-      border-radius: 18px;
+      background: linear-gradient(135deg, #ffd700 0%, #ff9900 100%);
+      border-radius: 20px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       font-size: 38px;
       margin-bottom: 16px;
-      box-shadow: 0 8px 16px rgba(255, 65, 108, 0.35);
+      box-shadow: 0 10px 25px rgba(255, 215, 0, 0.35);
+      color: #0a192f;
     }
     h1 {
-      font-size: 24px;
+      font-size: 26px;
       font-weight: 800;
       letter-spacing: -0.5px;
       margin-bottom: 6px;
-      background: linear-gradient(90deg, #fff, #ffd200);
+      background: linear-gradient(90deg, #ffffff 0%, #ffd700 65%, #ffa500 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
     .subtitle {
-      color: #b3a7d6;
+      color: #8892b0;
       font-size: 14px;
       margin-bottom: 24px;
+      font-weight: 500;
     }
     .badge {
       display: inline-block;
@@ -307,21 +320,21 @@ const generateInviteHtml = (availability, req) => {
       letter-spacing: 0.5px;
       margin-bottom: 16px;
     }
-    .badge-success { background: rgba(38, 222, 129, 0.2); color: #26de81; border: 1px solid #26de81; }
-    .badge-warning { background: rgba(254, 211, 48, 0.2); color: #fed330; border: 1px solid #fed330; }
-    .badge-danger { background: rgba(252, 92, 101, 0.2); color: #fc5c65; border: 1px solid #fc5c65; }
-    .badge-info { background: rgba(69, 170, 242, 0.2); color: #45aaf2; border: 1px solid #45aaf2; }
+    .badge-success { background: rgba(38, 222, 129, 0.18); color: #26de81; border: 1px solid #26de81; }
+    .badge-warning { background: rgba(255, 215, 0, 0.18); color: #ffd700; border: 1px solid #ffd700; }
+    .badge-danger { background: rgba(255, 99, 72, 0.18); color: #ff6348; border: 1px solid #ff6348; }
+    .badge-info { background: rgba(100, 255, 218, 0.18); color: #64ffda; border: 1px solid #64ffda; }
     
     .room-box {
-      background: rgba(0, 0, 0, 0.35);
-      border: 2px dashed rgba(255, 215, 0, 0.35);
+      background: rgba(10, 25, 47, 0.7);
+      border: 2px dashed rgba(255, 215, 0, 0.45);
       border-radius: 16px;
       padding: 16px;
       margin-bottom: 20px;
     }
     .room-label {
       font-size: 11px;
-      color: #a49bc7;
+      color: #8892b0;
       text-transform: uppercase;
       letter-spacing: 1.5px;
       margin-bottom: 6px;
@@ -330,7 +343,8 @@ const generateInviteHtml = (availability, req) => {
       font-size: 32px;
       font-weight: 900;
       letter-spacing: 6px;
-      color: #ffd200;
+      color: #ffd700;
+      text-shadow: 0 0 15px rgba(255, 215, 0, 0.4);
     }
     .stats-grid {
       display: grid;
@@ -339,19 +353,19 @@ const generateInviteHtml = (availability, req) => {
       margin-bottom: 24px;
     }
     .stat-item {
-      background: rgba(255, 255, 255, 0.04);
+      background: rgba(10, 25, 47, 0.5);
       border-radius: 12px;
       padding: 10px;
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 215, 0, 0.15);
     }
     .stat-val {
       font-size: 16px;
       font-weight: 700;
-      color: #fff;
+      color: #ccd6f6;
     }
     .stat-lbl {
       font-size: 11px;
-      color: #9c8eb9;
+      color: #8892b0;
       margin-top: 2px;
     }
     .btn {
@@ -367,35 +381,38 @@ const generateInviteHtml = (availability, req) => {
       transition: all 0.2s ease;
     }
     .btn-primary {
-      background: linear-gradient(135deg, #05c46b, #0be881);
-      color: #0b1a0d;
-      box-shadow: 0 8px 20px rgba(11, 232, 129, 0.35);
+      background: linear-gradient(135deg, #ffd700 0%, #ffaa00 100%);
+      color: #0a192f;
+      font-weight: 800;
+      box-shadow: 0 8px 24px rgba(255, 215, 0, 0.35);
       margin-bottom: 12px;
     }
     .btn-primary:hover {
       transform: translateY(-2px);
-      box-shadow: 0 12px 24px rgba(11, 232, 129, 0.45);
+      box-shadow: 0 12px 28px rgba(255, 215, 0, 0.45);
     }
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.08);
-      color: #ffffff;
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(10, 25, 47, 0.8);
+      color: #ffd700;
+      border: 1px solid rgba(255, 215, 0, 0.35);
       margin-bottom: 12px;
     }
     .btn-secondary:hover {
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(17, 34, 64, 0.9);
+      border-color: #ffd700;
     }
     .message-banner {
-      background: rgba(255, 255, 255, 0.06);
+      background: rgba(10, 25, 47, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: 12px;
       padding: 12px;
       font-size: 13px;
-      color: #dfd8f5;
+      color: #ccd6f6;
       margin-bottom: 20px;
     }
     .footer-note {
       font-size: 12px;
-      color: #7b7194;
+      color: #8892b0;
       margin-top: 18px;
     }
   </style>
@@ -422,8 +439,12 @@ const generateInviteHtml = (availability, req) => {
           <div class="stat-lbl">Players</div>
         </div>
         <div class="stat-item">
-          <div class="stat-val">${availability.entryFee ? `${availability.entryFee} 🪙` : "Free"}</div>
-          <div class="stat-lbl">Entry Fee</div>
+          <div class="stat-val">${availability.entryCoins ? `${availability.entryCoins} 🪙` : "Free"}</div>
+          <div class="stat-lbl">Entry Coins</div>
+        </div>
+        <div class="stat-item" style="grid-column: span 2;">
+          <div class="stat-val">${modeLabel}</div>
+          <div class="stat-lbl">Game Mode</div>
         </div>
       </div>
     ` : ""}
@@ -433,14 +454,14 @@ const generateInviteHtml = (availability, req) => {
     </div>
 
     ${isJoinable ? `
-      <a href="${deepLink}" class="btn btn-primary" id="joinBtn">Open Game &amp; Join</a>
+      <a href="${deepLink}" class="btn btn-primary" id="joinBtn">Open Ludo Supreme</a>
       <button class="btn btn-secondary" onclick="copyCode('${code}')" id="copyBtn">📋 Copy Room Code</button>
     ` : `
       <a href="${deepLink}" class="btn btn-secondary">Open Ludo Supreme</a>
     `}
 
-    <a href="${playStoreUrl}" class="btn btn-secondary" style="font-size: 13px; padding: 10px;">
-      📲 Download Ludo Supreme App
+    <a href="${downloadUrl}" class="btn btn-secondary" style="font-size: 13px; padding: 10px;">
+      📲 Download App
     </a>
 
     <div class="footer-note">

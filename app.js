@@ -144,6 +144,17 @@ const invitePageLimiter = createRateLimiter({
   message: "Too many room invitation requests. Please try again later.",
 });
 
+// Primary Android App Links & Invitation Route: /join/:roomCode
+app.get(
+  "/join/:roomCode",
+  invitePageLimiter,
+  roomCodeParamValidation,
+  validateRequest,
+  getInviteLandingPage
+);
+app.get("/join", invitePageLimiter, getInviteLandingPage);
+
+// Backward-compatible alias: /invite/:roomCode
 app.get(
   "/invite/:roomCode",
   invitePageLimiter,
@@ -153,18 +164,23 @@ app.get(
 );
 app.get("/invite", invitePageLimiter, getInviteLandingPage);
 
-// Android App Links verification endpoint
+// Android App Links verification endpoint (public, unauthenticated, valid JSON)
 app.get("/.well-known/assetlinks.json", (_req, res) => {
-  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  const rawFingerprints = process.env.ANDROID_SHA256_FINGERPRINTS || "";
+  const fingerprints = rawFingerprints
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   return res.status(200).json([
     {
       relation: ["delegate_permission/common.handle_all_urls"],
       target: {
         namespace: "android_app",
         package_name: process.env.ANDROID_PACKAGE_NAME || "com.ludosupreme.game",
-        sha256_cert_fingerprints: process.env.ANDROID_SHA256_FINGERPRINTS
-          ? process.env.ANDROID_SHA256_FINGERPRINTS.split(",").map((s) => s.trim()).filter(Boolean)
-          : [],
+        sha256_cert_fingerprints: fingerprints,
       },
     },
   ]);
