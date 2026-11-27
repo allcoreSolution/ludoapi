@@ -1,4 +1,4 @@
-const { body, param, validationResult } = require("express-validator");
+const { body, param, query, validationResult } = require("express-validator");
 const config = require("../../../../config/env");
 const { MAX_PLAYERS_LIST, MODE_NAMES } = require("../../games/engine/ludoEngine");
 
@@ -71,9 +71,48 @@ const roomCodeParamValidation = [
     .withMessage("Room code must contain only letters and numbers"),
 ];
 
+// ==========================
+// Share Template Validation
+// ==========================
+const shareTemplateValidation = [
+  query("roomCode")
+    .optional()
+    .trim()
+    .isLength({ min: 6, max: 6 })
+    .withMessage("roomCode must be exactly 6 characters")
+    .isAlphanumeric()
+    .withMessage("roomCode must contain only letters and numbers"),
+
+  query("entryCoins")
+    .optional()
+    .isInt({ min: 0 })
+    .withMessage("entryCoins must be a non-negative integer"),
+
+  query("gameMode")
+    .optional()
+    .isIn(MODE_NAMES)
+    .withMessage("gameMode must be 'twoPlayer', 'threePlayer', or 'fourPlayer'"),
+
+  query("inviteUrl")
+    .optional()
+    .trim()
+    .custom((val) => {
+      try {
+        const parsed = new URL(val);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("inviteUrl must start with http:// or https://");
+        }
+        return true;
+      } catch (e) {
+        throw new Error("inviteUrl must be a valid URL");
+      }
+    }),
+];
+
 module.exports = {
   validateRequest,
   createRoomValidation,
   joinRoomValidation,
   roomCodeParamValidation,
+  shareTemplateValidation,
 };

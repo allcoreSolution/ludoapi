@@ -132,6 +132,45 @@ app.get("/ready", (req, res) => {
 });
 
 // ==========================
+// Room Invitation Landing Page & Android App Links
+// ==========================
+const { getInviteLandingPage } = require("./src/modules/rooms/controllers/room.controller");
+const { roomCodeParamValidation, validateRequest } = require("./src/modules/rooms/validations/room.validation");
+const { createRateLimiter } = require("./middleware/rateLimit.middleware");
+
+const invitePageLimiter = createRateLimiter({
+  windowMs: 60_000,
+  max: 60,
+  message: "Too many room invitation requests. Please try again later.",
+});
+
+app.get(
+  "/invite/:roomCode",
+  invitePageLimiter,
+  roomCodeParamValidation,
+  validateRequest,
+  getInviteLandingPage
+);
+app.get("/invite", invitePageLimiter, getInviteLandingPage);
+
+// Android App Links verification endpoint
+app.get("/.well-known/assetlinks.json", (_req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  return res.status(200).json([
+    {
+      relation: ["delegate_permission/common.handle_all_urls"],
+      target: {
+        namespace: "android_app",
+        package_name: process.env.ANDROID_PACKAGE_NAME || "com.ludosupreme.game",
+        sha256_cert_fingerprints: process.env.ANDROID_SHA256_FINGERPRINTS
+          ? process.env.ANDROID_SHA256_FINGERPRINTS.split(",").map((s) => s.trim()).filter(Boolean)
+          : [],
+      },
+    },
+  ]);
+});
+
+// ==========================
 // API Routes
 // ==========================
 app.use("/api/auth", authRoutes);

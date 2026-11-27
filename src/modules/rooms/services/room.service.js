@@ -378,4 +378,21 @@ const cancelStaleRooms = async () => {
   return cancelled;
 };
 
-module.exports = { createRoom, joinRoom, getRoomDetails, leaveRoom, cancelStaleRooms, cancelRoomAndRefund, resolveRoomMode };
+const {
+  checkRoomAvailability,
+  buildShareTemplate,
+  generateInviteHtml,
+} = require("./roomInvitation.service");
+
+module.exports = {
+  createRoom,
+  joinRoom,
+  getRoomDetails,
+  leaveRoom,
+  cancelStaleRooms,
+  cancelRoomAndRefund,
+  resolveRoomMode,
+  checkRoomAvailability,
+  buildShareTemplate,
+  generateInviteHtml,
+};

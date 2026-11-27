@@ -208,4 +208,41 @@ const leaveRoom = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { createRoom, joinRoom, getRoomDetails, leaveRoom };
+// 5. Check Room Availability (Public / Pre-join validation)
+const checkRoomAvailability = asyncHandler(async (req, res) => {
+  const result = await roomService.checkRoomAvailability(req.params.roomCode);
+  const status = result.roomExists ? 200 : 404;
+  return res.status(status).json(result);
+});
+
+// 6. Get Share Template & Dynamic Invite Message
+const getShareTemplate = asyncHandler(async (req, res) => {
+  const { roomCode, entryCoins, gameMode, inviteUrl } = req.query;
+  const result = roomService.buildShareTemplate({
+    roomCode,
+    entryCoins,
+    gameMode,
+    inviteUrl,
+    req,
+  });
+  return res.status(200).json(result);
+});
+
+// 7. Get Room Invitation Landing Page (HTML View with Deep Link)
+const getInviteLandingPage = asyncHandler(async (req, res) => {
+  const availability = await roomService.checkRoomAvailability(req.params.roomCode);
+  const html = roomService.generateInviteHtml(availability, req);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  const status = availability.roomExists ? 200 : 404;
+  return res.status(status).send(html);
+});
+
+module.exports = {
+  createRoom,
+  joinRoom,
+  getRoomDetails,
+  leaveRoom,
+  checkRoomAvailability,
+  getShareTemplate,
+  getInviteLandingPage,
+};
