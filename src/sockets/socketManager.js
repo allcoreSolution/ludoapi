@@ -99,6 +99,56 @@ const extractToken = (socket) => {
   return (match ? match[1] : authHeader).trim();
 };
 
+/**
+ * Canonical Room State Formatter for Socket and REST communication.
+ * Guarantees uniform structure across Flutter clients, resolving ID, player,
+ * and session inconsistencies.
+ */
+const formatRoomPayload = (room, activeSession = null) => {
+  if (!room) return null;
+  const roomObj = room.toObject ? room.toObject() : { ...room };
+  const sid = activeSession
+    ? String(activeSession._id)
+    : (roomObj.sessionId || roomObj.matchId || roomObj.gameId || null);
+
+  const players = (roomObj.players || []).map((p) => {
+    const uid = String(p.user?._id || p.user || "");
+    return {
+      userId: uid,
+      playerId: uid,
+      user: uid,
+      name: p.name || "",
+      avatar: p.avatar || "",
+      seatIndex: p.seatIndex,
+      seat: p.seatIndex,
+      color: (p.color || (p.seatIndex === 0 ? "RED" : "GREEN")).toUpperCase(),
+      isReady: Boolean(p.isReady),
+      isHost: Boolean(p.isHost !== undefined ? p.isHost : p.seatIndex === 0),
+    };
+  });
+
+  const hostId = String(roomObj.host?._id || roomObj.host || "");
+  const code = (roomObj.roomCode || "").toUpperCase();
+  return {
+    _id: String(roomObj._id || ""),
+    roomId: code,
+    roomCode: code,
+    host: hostId,
+    hostId: hostId,
+    players,
+    maxPlayers: roomObj.maxPlayers || 2,
+    gameMode: roomObj.gameMode || "twoPlayer",
+    status: roomObj.status || "waiting",
+    entryFee: roomObj.entryFee || 0,
+    prizePool: roomObj.prizePool || 0,
+    sessionId: sid,
+    matchId: sid,
+    gameId: sid,
+    createdAt: roomObj.createdAt,
+    updatedAt: roomObj.updatedAt,
+  };
+};
+
 const formatSessionState = (session) => {
   if (!session) return null;
   const remainingMs = session.turnDeadline
@@ -775,15 +825,30 @@ const init = (httpServer) => {
           }
         }
 
+        const formattedRoom = formatRoomPayload(room, activeSession);
+
         socket.join(`room:${roomCode}`);
         io.to(`room:${roomCode}`).emit("player_joined", {
           roomCode,
           roomId: roomCode,
+          room: formattedRoom,
           userId,
           playerId: userId,
           name: socket.user.name,
           avatar: socket.user.avatar || "",
+          players: formattedRoom ? formattedRoom.players : [],
         });
+
+        if (formattedRoom) {
+          io.to(`room:${roomCode}`).emit("room_state", {
+            roomCode,
+            roomId: roomCode,
+            room: formattedRoom,
+            players: formattedRoom.players,
+            status: formattedRoom.status,
+            sessionId: formattedRoom.sessionId,
+          });
+        }
 
         // If a game session is already in progress for this roomCode, join and sync immediately
         if (activeSession) {
@@ -791,9 +856,32 @@ const init = (httpServer) => {
           const st = formatSessionState(activeSession);
           const myState = viewerView(st, userId);
           socket.emit("game_state", { state: myState, gameState: myState });
+          socket.emit("match_started", {
+            roomCode,
+            roomId: roomCode,
+            sessionId: String(activeSession._id),
+            matchId: String(activeSession._id),
+            gameId: String(activeSession._id),
+            state: myState,
+            gameState: myState,
+            players: st.players,
+          });
         }
 
-        if (typeof ack === "function") ack({ ok: true, roomCode });
+        if (typeof ack === "function") {
+          ack({
+            ok: true,
+            roomCode,
+            roomId: roomCode,
+            room: formattedRoom,
+            sessionId: activeSession ? String(activeSession._id) : null,
+            data: {
+              room: formattedRoom,
+              roomCode,
+              sessionId: activeSession ? String(activeSession._id) : null,
+            },
+          });
+        }
       } catch (err) {
         logger.error("socket_join_room_error", { err: err.message, userId });
         if (typeof ack === "function") ack({ ok: false, code: "INTERNAL_ERROR", message: err.message });
@@ -1530,6 +1618,7 @@ module.exports = {
   emitToSession,
   emitToRoom,
   emitToGame,
+  formatRoomPayload,
   formatSessionState,
   viewerView,
   isUserOnline,

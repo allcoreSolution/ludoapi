@@ -1,12 +1,13 @@
 "use strict";
 
 const asyncHandler = require("../../../../utils/asyncHandler");
+const logger = require("../../../../utils/logger");
 const roomService = require("../services/room.service");
 const socketManager = require("../../../sockets/socketManager");
 const GameSession = require("../../games/models/GameSession");
 
 const buildPlayerInfo = (players = [], userId, fallbackSeat = 0, fallbackHost = false) => {
-  const p = players.find((item) => String(item.user?._id || item.user) === String(userId));
+  const p = players.find((item) => String(item.user?._id || item.user || item.userId) === String(userId));
   if (p) {
     return {
       userId: String(userId),
@@ -31,6 +32,7 @@ const buildPlayerInfo = (players = [], userId, fallbackSeat = 0, fallbackHost = 
 const createRoom = asyncHandler(async (req, res) => {
   const { room, userCoins } = await roomService.createRoom(req.user, req.body);
   const playerInfo = buildPlayerInfo(room.players, req.user._id, 0, true);
+  const formattedRoom = socketManager.formatRoomPayload(room);
 
   return res.status(201).json({
     success: true,
@@ -38,16 +40,18 @@ const createRoom = asyncHandler(async (req, res) => {
     roomId: room.roomCode,
     roomCode: room.roomCode,
     matchId: null,
+    sessionId: null,
     player: playerInfo,
-    players: room.players,
+    players: formattedRoom ? formattedRoom.players : room.players,
     gameState: null,
     data: {
-      room,
+      room: formattedRoom || room,
       roomId: room.roomCode,
       roomCode: room.roomCode,
       matchId: null,
+      sessionId: null,
       player: playerInfo,
-      players: room.players,
+      players: formattedRoom ? formattedRoom.players : room.players,
       gameState: null,
       userCoins,
     },
@@ -67,18 +71,40 @@ const joinRoom = asyncHandler(async (req, res) => {
   );
 
   let activeSession = null;
-  try {
-    activeSession = await GameSession.findOne({ room: room._id, status: "in_progress" });
-  } catch (_) {}
+  // If the room has reached maximum players, automatically transition and start the match!
+  if (room.players.length >= room.maxPlayers) {
+    try {
+      const gameService = require("../../games/services/game.service");
+      const startResult = await gameService.startGame(room.host, room.roomCode);
+      activeSession = startResult.session;
+      room.status = "playing";
+
+      socketManager.joinUsersToSession(
+        activeSession.players.map((p) => p.user?._id || p.user),
+        activeSession
+      );
+      socketManager.broadcastGameStartedToPlayers(activeSession, room.roomCode);
+    } catch (err) {
+      logger.warn("auto_start_game_on_full_room_failed", { err: err.message, roomCode: room.roomCode });
+    }
+  }
+
+  if (!activeSession) {
+    try {
+      activeSession = await GameSession.findOne({ room: room._id, status: "in_progress" });
+    } catch (_) {}
+  }
+
   const baseState = activeSession ? socketManager.formatSessionState(activeSession) : null;
   const myGameState = baseState ? socketManager.viewerView(baseState, req.user._id) : null;
+  const formattedRoom = socketManager.formatRoomPayload(room, activeSession);
 
   try {
-    const roomCode = req.body.roomCode.trim().toUpperCase();
+    const roomCode = (room.roomCode || req.body.roomCode || "").trim().toUpperCase();
     socketManager.emitToRoom(roomCode, "player_joined", {
       roomCode,
       roomId: roomCode,
-      room: result.room,
+      room: formattedRoom,
       userId: String(req.user._id),
       playerId: String(req.user._id),
       name: req.user.name,
@@ -88,7 +114,19 @@ const joinRoom = asyncHandler(async (req, res) => {
       seat: playerInfo.seatIndex,
       isHost: playerInfo.isHost,
       player: playerInfo,
+      players: formattedRoom ? formattedRoom.players : room.players,
     });
+
+    if (formattedRoom) {
+      socketManager.emitToRoom(roomCode, "room_state", {
+        roomCode,
+        roomId: roomCode,
+        room: formattedRoom,
+        players: formattedRoom.players,
+        status: formattedRoom.status,
+        sessionId: formattedRoom.sessionId,
+      });
+    }
   } catch (_) {}
 
   return res.status(200).json({
@@ -96,17 +134,21 @@ const joinRoom = asyncHandler(async (req, res) => {
     message: result.alreadyInRoom ? "You are already in this room" : "Joined game room successfully",
     roomId: room.roomCode,
     roomCode: room.roomCode,
+    sessionId: activeSession ? String(activeSession._id) : null,
     matchId: activeSession ? String(activeSession._id) : null,
+    gameId: activeSession ? String(activeSession._id) : null,
     player: playerInfo,
-    players: room.players,
+    players: formattedRoom ? formattedRoom.players : room.players,
     gameState: myGameState,
     data: {
-      room: result.room,
+      room: formattedRoom || result.room,
       roomId: room.roomCode,
       roomCode: room.roomCode,
+      sessionId: activeSession ? String(activeSession._id) : null,
       matchId: activeSession ? String(activeSession._id) : null,
+      gameId: activeSession ? String(activeSession._id) : null,
       player: playerInfo,
-      players: room.players,
+      players: formattedRoom ? formattedRoom.players : room.players,
       assignedColor: playerInfo.color,
       seatIndex: playerInfo.seatIndex,
       userCoins: result.userCoins,
@@ -129,7 +171,7 @@ const getRoomDetails = asyncHandler(async (req, res) => {
   // Authenticated player identity if req.user is a participant
   const userId = req.user ? String(req.user._id) : null;
   const myPlayer = userId
-    ? (room.players || []).find((p) => String(p.user?._id || p.user) === userId)
+    ? (room.players || []).find((p) => String(p.user?._id || p.user || p.userId) === userId)
     : null;
   const isHost = myPlayer
     ? Boolean(myPlayer.isHost !== undefined ? myPlayer.isHost : myPlayer.seatIndex === 0)
@@ -147,6 +189,7 @@ const getRoomDetails = asyncHandler(async (req, res) => {
 
   const baseState = session ? socketManager.formatSessionState(session) : null;
   const gameState = baseState && userId ? socketManager.viewerView(baseState, userId) : baseState;
+  const formattedRoom = socketManager.formatRoomPayload(room, session);
 
   return res.status(200).json({
     success: true,
@@ -156,18 +199,18 @@ const getRoomDetails = asyncHandler(async (req, res) => {
     matchId,
     player: playerInfo,
     me: playerInfo,
-    players: room.players,
+    players: formattedRoom ? formattedRoom.players : room.players,
     gameState,
     state: gameState,
     data: {
-      room,
+      room: formattedRoom || room,
       roomId,
       roomCode,
       sessionId,
       matchId,
       player: playerInfo,
       me: playerInfo,
-      players: room.players,
+      players: formattedRoom ? formattedRoom.players : room.players,
       gameState,
       state: gameState,
     },
