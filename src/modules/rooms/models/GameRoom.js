@@ -97,8 +97,45 @@ const gameRoomSchema = new mongoose.Schema(
     // Room Status
     status: {
       type: String,
-      enum: ["waiting", "starting", "playing", "finished", "cancelled"],
+      enum: ["waiting", "starting", "playing", "finished", "cancelled", "expired"],
       default: "waiting",
+      index: true,
+    },
+
+    // Timestamp when a waiting room automatically expires
+    expiresAt: {
+      type: Date,
+      index: true,
+    },
+
+    // Reason if room was cancelled or expired
+    cancelledReason: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    // Who cancelled the room (null if system/timeout)
+    cancelledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    // Active or completed GameSession linked to this room
+    session: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "GameSession",
+      default: null,
+    },
+
+    // Settlement audit summary if match completed
+    settlement: {
+      settledAt: { type: Date, default: null },
+      winner: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      prizePool: { type: Number, default: 0 },
+      platformCommission: { type: Number, default: 0 },
+      winnerPayout: { type: Number, default: 0 },
     },
   },
   {
@@ -109,5 +146,7 @@ const gameRoomSchema = new mongoose.Schema(
 // "Which active room is this user in?" and the stale-room cleanup job.
 gameRoomSchema.index({ "players.user": 1, status: 1 });
 gameRoomSchema.index({ status: 1, updatedAt: 1 });
+gameRoomSchema.index({ status: 1, expiresAt: 1 });
+gameRoomSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model("GameRoom", gameRoomSchema);

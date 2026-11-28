@@ -30,6 +30,7 @@ test.before(async () => {
     }
 
     const queryObj = {
+      populate: () => queryObj,
       lean: () => Promise.resolve(result ? JSON.parse(JSON.stringify(result)) : null),
       sort: () => queryObj,
       exec: () => Promise.resolve(result ? JSON.parse(JSON.stringify(result)) : null),
@@ -338,7 +339,7 @@ test("17. Android App Links verification endpoint /.well-known/assetlinks.json",
     const body = await res.json();
     assert.ok(Array.isArray(body));
     assert.equal(body[0].target.namespace, "android_app");
-    assert.equal(body[0].target.package_name, "com.ludosupreme.game");
+    assert.equal(body[0].target.package_name, config.appLinks.packageName);
     assert.deepEqual(body[0].target.sha256_cert_fingerprints, ["14:6D:E9:4A:12:34:56:78:90:AB:CD:EF"]);
   } finally {
     process.env.ANDROID_SHA256_FINGERPRINTS = origFp;

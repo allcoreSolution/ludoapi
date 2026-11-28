@@ -178,7 +178,26 @@ const finishSettlement = async (sessionId) => {
     );
   }
 
-  await GameRoom.updateOne({ _id: session.room }, { $set: { status: "finished" } });
+  const winnerPlayer = (session.players || []).find((p) => String(p.user) === String(session.winner));
+  const winnerPayout = winnerPlayer ? Number(winnerPlayer.prizeEarned || 0) : 0;
+  const platformCommission = Math.max(0, (session.prizePool || 0) - winnerPayout);
+
+  await GameRoom.updateOne(
+    { _id: session.room },
+    {
+      $set: {
+        status: "finished",
+        session: session._id,
+        settlement: {
+          settledAt: new Date(),
+          winner: session.winner || null,
+          prizePool: session.prizePool || 0,
+          platformCommission,
+          winnerPayout,
+        },
+      },
+    }
+  );
   return session;
 };
 

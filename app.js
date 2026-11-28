@@ -174,12 +174,17 @@ app.get("/.well-known/assetlinks.json", (_req, res) => {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  const packageName =
+    process.env.ANDROID_PACKAGE_NAME ||
+    config.appLinks?.packageName ||
+    "com.allcore.ludo";
+
   return res.status(200).json([
     {
       relation: ["delegate_permission/common.handle_all_urls"],
       target: {
         namespace: "android_app",
-        package_name: process.env.ANDROID_PACKAGE_NAME || "com.ludosupreme.game",
+        package_name: packageName,
         sha256_cert_fingerprints: fingerprints,
       },
     },

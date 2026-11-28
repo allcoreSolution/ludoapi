@@ -59,13 +59,20 @@ const safeRefund = async (userId, fee, label) => {
 };
 
 /**
- * Cancel a waiting/starting room and refund EVERY player exactly once.
+ * Cancel or expire a waiting/starting room and refund EVERY player exactly once.
  * (Old code cancelled a host's previous room when they created a new one without refunding anyone.)
  */
-const cancelRoomAndRefund = async (room, label = "room cancelled") => {
+const cancelRoomAndRefund = async (room, label = "room cancelled", targetStatus = "cancelled", cancelledBy = null) => {
+  const finalStatus = targetStatus === "expired" ? "expired" : "cancelled";
   const cancelled = await GameRoom.findOneAndUpdate(
     { _id: room._id, status: { $in: ["waiting", "starting"] } },
-    { $set: { status: "cancelled" } },
+    {
+      $set: {
+        status: finalStatus,
+        cancelledReason: label,
+        cancelledBy: cancelledBy || null,
+      },
+    },
     { returnDocument: "after" }
   );
   if (!cancelled) {
@@ -75,13 +82,37 @@ const cancelRoomAndRefund = async (room, label = "room cancelled") => {
   for (const player of cancelled.players) {
     try {
       // referenceId is unique per user => a retry can never refund twice
-      await refundEntryFee(player.user, cancelled.entryFee, `${label} (${cancelled.roomCode})`, `refund:cancel:${cancelled._id}`);
+      await refundEntryFee(player.user, cancelled.entryFee, `${label} (${cancelled.roomCode})`, `refund:${finalStatus}:${cancelled._id}`);
     } catch (error) {
       logger.error("REFUND_FAILED_MANUAL_ACTION_REQUIRED", {
         userId: String(player.user), roomId: String(cancelled._id), err: error,
       });
     }
   }
+
+  try {
+    const socketManager = require("../../../sockets/socketManager");
+    const eventName = finalStatus === "expired" ? "room_expired" : "room_cancelled";
+    socketManager.emitToRoom(cancelled.roomCode, eventName, {
+      roomCode: cancelled.roomCode,
+      roomId: cancelled.roomCode,
+      status: finalStatus,
+      reason: label,
+      message: label === "room expired" ? "Room has expired due to lobby timeout." : "Room was cancelled.",
+    });
+    // Also emit room_cancelled for backwards compatibility
+    if (eventName !== "room_cancelled") {
+      socketManager.emitToRoom(cancelled.roomCode, "room_cancelled", {
+        roomCode: cancelled.roomCode,
+        roomId: cancelled.roomCode,
+        status: finalStatus,
+        reason: label,
+      });
+    }
+  } catch (err) {
+    logger.warn("room_cancel_socket_emit_failed", { err: err.message, roomCode: cancelled.roomCode });
+  }
+
   return cancelled;
 };
 
@@ -160,6 +191,7 @@ const createRoom = async (user, body) => {
           // The pool is recalculated from fees actually collected when the match starts.
           prizePool: entryFee * maxPlayers,
           status: "waiting",
+          expiresAt: new Date(Date.now() + (config.economy.roomWaitingTtlMinutes || 10) * 60_000),
         });
       } catch (error) {
         if (error.code !== 11000) throw error; // room code collision -> retry with a new code
@@ -360,16 +392,21 @@ const leaveRoom = async (user, roomCodeRaw) => {
 // Background cleanup: rooms nobody started would hold players' entry fees forever
 // ------------------------------------------------------------------
 const cancelStaleRooms = async () => {
-  const cutoff = new Date(Date.now() - config.economy.roomWaitingTtlMinutes * 60_000);
+  const ttlMinutes = config.economy?.roomWaitingTtlMinutes || 10;
+  const cutoff = new Date(Date.now() - ttlMinutes * 60_000);
+  const now = new Date();
   const stale = await GameRoom.find({
     status: { $in: ["waiting", "starting"] },
-    updatedAt: { $lt: cutoff },
+    $or: [
+      { expiresAt: { $lte: now } },
+      { expiresAt: null, updatedAt: { $lt: cutoff } },
+    ],
   }).limit(50);
 
   let cancelled = 0;
   for (const room of stale) {
     try {
-      await cancelRoomAndRefund(room, "room expired");
+      await cancelRoomAndRefund(room, "room expired", "expired");
       cancelled += 1;
     } catch (error) {
       if (!(error instanceof AppError)) logger.error("stale_room_cancel_failed", { roomId: String(room._id), err: error });

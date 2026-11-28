@@ -136,7 +136,7 @@ function loadConfig(env = process.env) {
       maxEntryFee: toInt(env.MAX_ENTRY_FEE, 10000),
       // % of the prize pool kept by the platform. 0 = winner takes everything.
       platformFeePercent: toNumber(env.PLATFORM_FEE_PERCENT, 0),
-      roomWaitingTtlMinutes: toInt(env.ROOM_WAITING_TTL_MIN, 30),
+      roomWaitingTtlMinutes: toInt(env.ROOM_WAITING_TTL_MIN, 10),
     },
 
     matchmaking: {
@@ -165,9 +165,12 @@ function loadConfig(env = process.env) {
     },
 
     appLinks: {
-      packageName: env.ANDROID_PACKAGE_NAME || "com.ludosupreme.game",
+      packageName: env.ANDROID_PACKAGE_NAME || "com.allcore.ludo",
       sha256Fingerprints: toList(env.ANDROID_SHA256_FINGERPRINTS),
-      downloadUrl: env.APP_DOWNLOAD_URL || "https://play.google.com/store/apps/details?id=com.ludosupreme.game",
+      playStoreUrl: env.APP_PLAYSTORE_URL || "https://play.google.com/store/apps/details?id=com.allcore.ludo",
+      apkDownloadUrl: env.APP_APK_DOWNLOAD_URL || "",
+      downloadUrl: env.APP_DOWNLOAD_URL || env.APP_PLAYSTORE_URL || "https://play.google.com/store/apps/details?id=com.allcore.ludo",
+      inviteBaseUrl: env.INVITE_BASE_URL || "https://ludoapi-jupm.onrender.com",
     },
   };
 

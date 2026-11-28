@@ -27,42 +27,58 @@ const checkRoomAvailability = async (rawCode) => {
   if (!code || code.length !== 6 || !/^[A-Z0-9]{6}$/.test(code)) {
     return {
       success: false,
-      roomCode: code,
+      exists: false,
       roomExists: false,
-      status: null,
+      canJoin: false,
       isJoinable: false,
-      isFull: false,
+      roomCode: code,
+      status: null,
+      errorCode: "INVALID_ROOM_CODE",
+      message: "Invalid room code format. Must be 6 alphanumeric characters.",
       currentPlayers: 0,
+      playerCount: 0,
       maxPlayers: 0,
       availableSlots: 0,
+      isFull: false,
       gameStarted: false,
       roomExpired: false,
       entryCoins: 0,
       entryFee: 0,
       gameMode: null,
-      message: "Invalid room code format. Must be 6 alphanumeric characters.",
+      host: null,
+      expiresAt: null,
+      remainingSeconds: 0,
     };
   }
 
-  const room = await GameRoom.findOne({ roomCode: code }).lean();
+  const room = await GameRoom.findOne({ roomCode: code })
+    .populate("host", "name avatar")
+    .lean();
 
   if (!room) {
     return {
       success: false,
-      roomCode: code,
+      exists: false,
       roomExists: false,
-      status: null,
+      canJoin: false,
       isJoinable: false,
-      isFull: false,
+      roomCode: code,
+      status: null,
+      errorCode: "ROOM_NOT_FOUND",
+      message: "Room not found",
       currentPlayers: 0,
+      playerCount: 0,
       maxPlayers: 0,
       availableSlots: 0,
+      isFull: false,
       gameStarted: false,
       roomExpired: false,
       entryCoins: 0,
       entryFee: 0,
       gameMode: null,
-      message: "Room not found",
+      host: null,
+      expiresAt: null,
+      remainingSeconds: 0,
     };
   }
 
@@ -71,45 +87,77 @@ const checkRoomAvailability = async (rawCode) => {
   const availableSlots = Math.max(0, maxPlayers - currentPlayers);
   const isFull = availableSlots === 0;
 
-  const ttlMinutes = config.economy?.roomWaitingTtlMinutes || 30;
+  const ttlMinutes = config.economy?.roomWaitingTtlMinutes || 10;
+  const lastActive = room.updatedAt || room.createdAt || Date.now();
+  const expiresAt = room.expiresAt
+    ? new Date(room.expiresAt)
+    : new Date(new Date(lastActive).getTime() + ttlMinutes * 60_000);
+
   const isStale =
     (room.status === "waiting" || room.status === "starting") &&
-    room.updatedAt &&
-    Date.now() - new Date(room.updatedAt).getTime() > ttlMinutes * 60_000;
+    Date.now() > expiresAt.getTime();
 
-  const roomExpired = room.status === "cancelled" || isStale;
+  const isCancelled = room.status === "cancelled";
+  const roomExpired = room.status === "expired" || isCancelled || isStale;
   const gameStarted = ["starting", "playing", "finished"].includes(room.status);
-  const isJoinable = room.status === "waiting" && !isFull && !roomExpired;
+  const isJoinable = room.status === "waiting" && !isFull && !roomExpired && !gameStarted;
 
+  let errorCode = null;
   let message = "Room is available to join";
-  if (room.status === "cancelled") {
+
+  if (isCancelled) {
+    errorCode = "ROOM_CANCELLED";
     message = "Room was cancelled";
   } else if (roomExpired) {
+    errorCode = "ROOM_EXPIRED";
     message = "Room has expired";
   } else if (room.status === "finished") {
+    errorCode = "MATCH_ALREADY_STARTED";
     message = "Game has already finished";
   } else if (gameStarted) {
+    errorCode = "MATCH_ALREADY_STARTED";
     message = "Game has already started";
   } else if (isFull) {
+    errorCode = "ROOM_FULL";
     message = "Room is full";
   }
 
+  const hostPlayer = (room.players || []).find((p) => p.isHost || p.seatIndex === 0);
+  const hostObj = room.host && typeof room.host === "object" ? room.host : null;
+  const hostName = hostObj?.name || hostPlayer?.name || "Host";
+  const hostAvatar = hostObj?.avatar || hostPlayer?.avatar || "";
+  const hostId = String(hostObj?._id || room.host || "");
+
+  const remainingSeconds = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
+
   return {
     success: true,
-    roomCode: code,
+    exists: true,
     roomExists: true,
-    status: room.status,
+    canJoin: isJoinable,
     isJoinable,
-    isFull,
+    roomCode: code,
+    status: isStale && room.status === "waiting" ? "expired" : room.status,
+    errorCode,
+    message,
     currentPlayers,
+    playerCount: currentPlayers,
     maxPlayers,
     availableSlots,
+    isFull,
     gameStarted,
     roomExpired,
-    message,
     entryCoins: Number(room.entryFee) || 0,
     entryFee: Number(room.entryFee) || 0,
     gameMode: room.gameMode || "twoPlayer",
+    host: {
+      id: hostId,
+      userId: hostId,
+      name: hostName,
+      avatar: hostAvatar,
+    },
+    expiresAt: expiresAt.toISOString(),
+    remainingSeconds,
   };
 };
 
@@ -204,7 +252,19 @@ const generateInviteHtml = (availability, req) => {
   const isJoinable = Boolean(availability.isJoinable);
   const message = escapeHtml(availability.message || "Room Status");
   const deepLink = code ? `ludosupreme://join?code=${encodeURIComponent(code)}` : "ludosupreme://";
-  const downloadUrl = escapeHtml(process.env.APP_DOWNLOAD_URL || "https://play.google.com/store/apps/details?id=com.ludosupreme.game");
+  const appPackage = escapeHtml(config.appLinks?.packageName || "com.allcore.ludo");
+  const playStoreUrl = escapeHtml(
+    process.env.APP_PLAYSTORE_URL ||
+    config.appLinks?.playStoreUrl ||
+    `https://play.google.com/store/apps/details?id=${appPackage}`
+  );
+  const apkDownloadUrl = escapeHtml(
+    process.env.APP_APK_DOWNLOAD_URL ||
+    config.appLinks?.apkDownloadUrl ||
+    ""
+  );
+  const downloadUrl = apkDownloadUrl || playStoreUrl;
+  const hostName = escapeHtml(availability.host?.name || "Host");
   const modeLabel =
     availability.gameMode === "threePlayer" ? "3 Players" :
     availability.gameMode === "fourPlayer" ? "4 Players" : "2 Players";
@@ -446,6 +506,12 @@ const generateInviteHtml = (availability, req) => {
           <div class="stat-val">${modeLabel}</div>
           <div class="stat-lbl">Game Mode</div>
         </div>
+        ${availability.host?.name ? `
+        <div class="stat-item" style="grid-column: span 2;">
+          <div class="stat-val">👑 ${hostName}</div>
+          <div class="stat-lbl">Room Host</div>
+        </div>
+        ` : ""}
       </div>
     ` : ""}
 

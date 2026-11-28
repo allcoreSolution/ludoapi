@@ -130,6 +130,27 @@ const withdrawalRejectValidation = [
   body("adminNote").optional({ values: "null" }).isString().trim().isLength({ max: 500 }),
 ];
 
+const roomListQuery = [
+  query("page").optional().isInt({ min: 1, max: 100000 }).withMessage("page must be a positive integer"),
+  query("limit").optional().isInt({ min: 1, max: 100 }).withMessage("limit must be between 1 and 100"),
+  query("mode").optional().isIn(["twoPlayer", "threePlayer", "fourPlayer"]).withMessage("Invalid mode"),
+  query("status").optional().isIn(["waiting", "starting", "playing", "finished", "cancelled", "expired"]).withMessage("Invalid status"),
+  query("roomCode").optional().isString().trim().isLength({ max: 12 }).withMessage("roomCode must be at most 12 characters"),
+  query("from").optional().isISO8601().withMessage("from must be an ISO date"),
+  query("to").optional().isISO8601().withMessage("to must be an ISO date"),
+];
+
+const forceCancelRoomValidation = [
+  idParam,
+  body("reason").isString().trim().notEmpty().withMessage("Cancellation reason is required").isLength({ max: 300 }),
+];
+
+const economyConfigValidation = [
+  body("platformFeePercent").optional().isFloat({ min: 0, max: 50 }).withMessage("platformFeePercent must be between 0 and 50"),
+  body("roomWaitingTtlMinutes").optional().isInt({ min: 1, max: 120 }).withMessage("roomWaitingTtlMinutes must be between 1 and 120 minutes"),
+  body("maxEntryFee").optional().isInt({ min: 0, max: 1000000 }).withMessage("maxEntryFee must be a valid non-negative integer"),
+];
+
 module.exports = {
   validateRequest,
   isStrongPassword,
@@ -149,4 +170,7 @@ module.exports = {
   withdrawalRejectValidation,
   sessionIdParam,
   liveMatchesQuery,
+  roomListQuery,
+  forceCancelRoomValidation,
+  economyConfigValidation,
 };

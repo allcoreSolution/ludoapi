@@ -144,6 +144,8 @@ const formatRoomPayload = (room, activeSession = null) => {
     sessionId: sid,
     matchId: sid,
     gameId: sid,
+    expiresAt: roomObj.expiresAt || null,
+    cancelledReason: roomObj.cancelledReason || null,
     createdAt: roomObj.createdAt,
     updatedAt: roomObj.updatedAt,
   };

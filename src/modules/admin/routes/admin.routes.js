@@ -16,6 +16,7 @@ const supportCtl = require("../../support/controllers/support.controller");
 const paymentsCtl = require("../controllers/payments.controller");
 const matchmakingCtl = require("../../matchmaking/controllers/matchmaking.controller");
 const onlineCtl = require("../controllers/online.controller");
+const roomsCtl = require("../controllers/rooms.controller");
 
 const router = express.Router();
 const { qs } = require("../../../../utils/adminHelpers");
@@ -46,6 +47,16 @@ router.post("/users/:id/coins", requireSuperAdmin, adminWriteLimiter, v.coinAdju
 router.get("/games", v.listQuery, check, gamesCtl.listGames);
 router.get("/games/:id", v.idParam, check, gamesCtl.getGame);
 router.get("/matchmaking/stats", matchmakingCtl.getNearbyMatchmakingStats);
+
+// Play With Friends / Custom Rooms
+router.get("/rooms", v.roomListQuery, check, roomsCtl.listRooms);
+router.get("/rooms/:id", v.idParam, check, roomsCtl.getRoomDetail);
+router.post("/rooms/:id/cancel", adminWriteLimiter, v.forceCancelRoomValidation, check, roomsCtl.forceCancelRoom);
+router.post("/rooms/:id/expire", adminWriteLimiter, v.forceCancelRoomValidation, check, roomsCtl.forceExpireRoom);
+router.get("/analytics/rooms", roomsCtl.getRoomAnalytics);
+router.get("/fraud/room-alerts", roomsCtl.getFraudRoomAlerts);
+router.get("/settings/economy", roomsCtl.getEconomySettings);
+router.patch("/settings/economy", adminWriteLimiter, v.economyConfigValidation, check, roomsCtl.updateEconomySettings);
 
 // Online Operations & Live Match Control (Phase 1)
 router.get("/online/live-matches", v.liveMatchesQuery, check, onlineCtl.getLiveMatches);
