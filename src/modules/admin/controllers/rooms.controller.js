@@ -1,10 +1,12 @@
 "use strict";
 
+const mongoose = require("mongoose");
 const AppError = require("../../../../utils/AppError");
 const asyncHandler = require("../../../../utils/asyncHandler");
 const { qs, parsePagination, pageMeta, escapeRegex, dateRange } = require("../../../../utils/adminHelpers");
 const GameRoom = require("../../rooms/models/GameRoom");
 const GameSession = require("../../games/models/GameSession");
+const SystemSetting = require("../models/systemSetting.model");
 const roomService = require("../../rooms/services/room.service");
 const auditService = require("../services/audit.service");
 const config = require("../../../../config/env");
@@ -312,65 +314,74 @@ exports.getRoomAnalytics = asyncHandler(async (req, res) => {
 exports.getFraudRoomAlerts = asyncHandler(async (req, res) => {
   const since = new Date(Date.now() - 48 * 3600 * 1000); // Past 48 hours
 
-  // 1. Detect repeated matches between the exact same pair of users
-  const repeatedPairs = await GameRoom.aggregate([
-    { $match: { createdAt: { $gte: since }, "players.1": { $exists: true } } },
-    {
-      $project: {
-        roomCode: 1,
-        players: "$players.user",
-        status: 1,
-        entryFee: 1,
-        settlement: 1,
-        createdAt: 1,
+  let repeatedPairs = [];
+  try {
+    // 1. Detect repeated matches between the exact same pair of users
+    repeatedPairs = await GameRoom.aggregate([
+      { $match: { createdAt: { $gte: since }, "players.1": { $exists: true } } },
+      {
+        $project: {
+          roomCode: 1,
+          players: "$players.user",
+          status: 1,
+          entryFee: 1,
+          settlement: 1,
+          createdAt: 1,
+        },
       },
-    },
-    { $unwind: "$players" },
-    { $sort: { players: 1 } },
-    {
-      $group: {
-        _id: "$_id",
-        roomCode: { $first: "$roomCode" },
-        userPair: { $push: "$players" },
-        status: { $first: "$status" },
-        entryFee: { $first: "$entryFee" },
-        winner: { $first: "$settlement.winner" },
-        createdAt: { $first: "$createdAt" },
+      { $unwind: "$players" },
+      { $sort: { players: 1 } },
+      {
+        $group: {
+          _id: "$_id",
+          roomCode: { $first: "$roomCode" },
+          userPair: { $push: "$players" },
+          status: { $first: "$status" },
+          entryFee: { $first: "$entryFee" },
+          winner: { $first: "$settlement.winner" },
+          createdAt: { $first: "$createdAt" },
+        },
       },
-    },
-    {
-      $group: {
-        _id: { $substr: ["$userPair", 0, 100] },
-        players: { $first: "$userPair" },
-        matchCount: { $sum: 1 },
-        totalCoinsWagered: { $sum: { $multiply: ["$entryFee", 2] } },
-        rooms: { $push: { roomCode: "$roomCode", winner: "$winner", createdAt: "$createdAt" } },
+      {
+        $group: {
+          _id: { $substr: ["$userPair", 0, 100] },
+          players: { $first: "$userPair" },
+          matchCount: { $sum: 1 },
+          totalCoinsWagered: { $sum: { $multiply: ["$entryFee", 2] } },
+          rooms: { $push: { roomCode: "$roomCode", winner: "$winner", createdAt: "$createdAt" } },
+        },
       },
-    },
-    { $match: { matchCount: { $gte: 4 } } },
-    { $sort: { matchCount: -1 } },
-    { $limit: 20 },
-  ]);
+      { $match: { matchCount: { $gte: 4 } } },
+      { $sort: { matchCount: -1 } },
+      { $limit: 20 },
+    ]);
+  } catch (err) {
+    logger.warn("fraud_alerts_aggregation_warning", { error: err.message });
+  }
 
   // Populate user information for the detected pairs
-  const alerts = await Promise.all(
-    repeatedPairs.map(async (pair) => {
-      const User = require("../../auth/models/User");
-      const users = await User.find({ _id: { $in: pair.players } }).select("name username email").lean();
-      return {
-        type: "FREQUENT_PAIR_MATCHUP",
-        severity: pair.matchCount >= 8 ? "HIGH" : "MEDIUM",
-        evidence: `Users played ${pair.matchCount} matches in 48 hours with ${pair.totalCoinsWagered} coins wagered.`,
-        matchCount: pair.matchCount,
-        totalWagered: pair.totalCoinsWagered,
-        players: users.map((u) => ({ id: String(u._id), name: u.name, username: u.username, email: u.email })),
-        recentRooms: (pair.rooms || []).slice(-5),
-      };
-    })
-  );
+  let alerts = [];
+  if (Array.isArray(repeatedPairs) && repeatedPairs.length > 0) {
+    alerts = await Promise.all(
+      repeatedPairs.map(async (pair) => {
+        const User = require("../../auth/models/User");
+        const users = await User.find({ _id: { $in: pair.players } }).select("name username email").lean();
+        return {
+          type: "FREQUENT_PAIR_MATCHUP",
+          severity: pair.matchCount >= 8 ? "HIGH" : "MEDIUM",
+          evidence: `Users played ${pair.matchCount} matches in 48 hours with ${pair.totalCoinsWagered} coins wagered.`,
+          matchCount: pair.matchCount,
+          totalWagered: pair.totalCoinsWagered,
+          players: users.map((u) => ({ id: String(u._id), name: u.name, username: u.username, email: u.email })),
+          recentRooms: (pair.rooms || []).slice(-5),
+        };
+      })
+    );
+  }
 
   res.json({
     success: true,
+    message: "Fraud alerts fetched successfully",
     data: {
       alertCount: alerts.length,
       alerts,
@@ -380,22 +391,42 @@ exports.getFraudRoomAlerts = asyncHandler(async (req, res) => {
 
 /**
  * 7. GET /api/admin/settings/economy
- * Fetch configurable economy parameters.
+ * Fetch configurable economy parameters from MongoDB or fallback to config defaults.
  */
 exports.getEconomySettings = asyncHandler(async (_req, res) => {
+  let persisted = null;
+  if (mongoose.connection.readyState === 1) {
+    try {
+      persisted = await SystemSetting.findOne({ key: "economy_settings" }).maxTimeMS(2000).lean();
+    } catch (err) {
+      logger.warn("system_setting_query_error", { error: err.message });
+    }
+  }
+
+  const saved = persisted?.value || {};
+  const platformFee = saved.platformFeePercent !== undefined ? saved.platformFeePercent : config.economy.platformFeePercent;
+  const ttl = saved.roomWaitingTtlMinutes !== undefined ? saved.roomWaitingTtlMinutes : config.economy.roomWaitingTtlMinutes;
+  const maxFee = saved.maxEntryFee !== undefined ? saved.maxEntryFee : config.economy.maxEntryFee;
+
+  // Keep in-memory config in sync
+  config.economy.platformFeePercent = platformFee;
+  config.economy.roomWaitingTtlMinutes = ttl;
+  config.economy.maxEntryFee = maxFee;
+
   res.json({
     success: true,
+    message: "Settings fetched successfully",
     data: {
-      platformFeePercent: config.economy.platformFeePercent,
-      roomWaitingTtlMinutes: config.economy.roomWaitingTtlMinutes,
-      maxEntryFee: config.economy.maxEntryFee,
+      platformFeePercent: platformFee,
+      roomWaitingTtlMinutes: ttl,
+      maxEntryFee: maxFee,
       signupBonusCoins: config.economy.signupBonusCoins,
       allowedEntryFeeSlabs: [0, 10, 50, 100, 250, 500, 1000, 2500, 5000],
       appLinks: {
-        packageName: config.appLinks.packageName,
-        playStoreUrl: config.appLinks.playStoreUrl,
-        apkDownloadUrl: config.appLinks.apkDownloadUrl,
-        inviteBaseUrl: config.appLinks.inviteBaseUrl,
+        packageName: saved.appLinks?.packageName || config.appLinks.packageName,
+        playStoreUrl: saved.appLinks?.playStoreUrl || config.appLinks.playStoreUrl,
+        apkDownloadUrl: saved.appLinks?.apkDownloadUrl || config.appLinks.apkDownloadUrl,
+        inviteBaseUrl: saved.appLinks?.inviteBaseUrl || config.appLinks.inviteBaseUrl,
       },
     },
   });
@@ -403,10 +434,10 @@ exports.getEconomySettings = asyncHandler(async (_req, res) => {
 
 /**
  * 8. PATCH /api/admin/settings/economy
- * Update configurable economy parameters with strict validation.
+ * Update configurable economy parameters with strict validation and persist to MongoDB.
  */
 exports.updateEconomySettings = asyncHandler(async (req, res) => {
-  const { platformFeePercent, roomWaitingTtlMinutes, maxEntryFee } = req.body;
+  const { platformFeePercent, roomWaitingTtlMinutes, maxEntryFee, appLinks } = req.body;
 
   if (platformFeePercent !== undefined) {
     const fee = Number(platformFeePercent);
@@ -430,6 +461,36 @@ exports.updateEconomySettings = asyncHandler(async (req, res) => {
       throw new AppError("maxEntryFee must be a non-negative integer", 400);
     }
     config.economy.maxEntryFee = maxFee;
+  }
+
+  const payloadToPersist = {
+    platformFeePercent: config.economy.platformFeePercent,
+    roomWaitingTtlMinutes: config.economy.roomWaitingTtlMinutes,
+    maxEntryFee: config.economy.maxEntryFee,
+    appLinks: {
+      packageName: appLinks?.packageName || config.appLinks.packageName,
+      playStoreUrl: appLinks?.playStoreUrl || config.appLinks.playStoreUrl,
+      apkDownloadUrl: appLinks?.apkDownloadUrl || config.appLinks.apkDownloadUrl,
+      inviteBaseUrl: appLinks?.inviteBaseUrl || config.appLinks.inviteBaseUrl,
+    },
+  };
+
+  if (mongoose.connection.readyState === 1) {
+    try {
+      await SystemSetting.findOneAndUpdate(
+        { key: "economy_settings" },
+        {
+          $set: {
+            key: "economy_settings",
+            value: payloadToPersist,
+            updatedBy: req.admin?._id || null,
+          },
+        },
+        { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
+      );
+    } catch (err) {
+      logger.warn("system_setting_persist_error", { error: err.message });
+    }
   }
 
   await auditService.record(req, "admin_update_economy_settings", {
